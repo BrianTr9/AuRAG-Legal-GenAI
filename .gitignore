@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Models & Data
+models/
+docs/chroma/
+docs/**/*.pdf
+*.gguf
+
+*.txt
+!requirements.txt
+
+# MacOS
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
+
+# Environment
+.env
+*.log
