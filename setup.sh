@@ -19,14 +19,17 @@ pip install --upgrade pip
 echo "Installing dependencies..."
 pip install -r requirements.txt
 
-echo "Creating docs folder..."
-mkdir -p docs
+echo "Creating data folders..."
+mkdir -p data/raw
+mkdir -p data/processed
+mkdir -p data/vector_db
+mkdir -p models
 
 echo ""
 echo "✅ Done!"
 echo ""
 echo "Next:"
 echo "1. source .venv/bin/activate"
-echo "2. Add PDFs to docs/"
-echo "3. python RAG.py"
+echo "2. Add PDFs to data/raw/"
+echo "3. python src/rag.py"
 echo ""

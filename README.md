@@ -1,91 +1,50 @@
-# Local RAG Baseline
+# AuRAG: Auditable Retrieval-Augmented Generation
 
-Minimal local RAG system optimized for MacOS M3 Pro.
+**Enhancing Trustworthiness via Hierarchical Retrieval and Retrieval-Dependent Grammars**
 
-## Quick Start
+## Overview
 
-```bash
-# Setup
-bash setup.sh
+AuRAG is a research project designed to address critical challenges in deploying RAG systems for high-stakes domains such as Law and Healthcare. Current systems often suffer from **citation hallucinations** (plausible but non-existent references) and rely on "black-box" verification that compromises data privacy.
 
-# Add PDFs
-cp your_documents.pdf docs/
+This project proposes a **Defense-in-Depth architecture** that moves from probabilistic "soft constraints" (prompt engineering) to deterministic "hard control" over generation, ensuring structural integrity and enabling independent auditing.
 
-# Run
-source .venv/bin/activate
-python RAG.py
-```
+## Core Methodology
 
-## How It Works
+The system is built upon three distinct layers designed to work in unison:
 
-1. Downloads Gemma-2-9B-It model (~5.4GB, first run only)
-2. Loads PDFs from `docs/` folder
-3. Creates vector database in `docs/chroma/`
-4. Starts Q&A CLI
+### Layer 1: Hierarchical Indexing (Retrieval Optimization)
+*   **Mechanism**: Implements a "Small-to-Big" retrieval strategy.
+*   **Process**: Documents are parsed into a tree structure (e.g., Statute → Provision → Atomic Proposition). Dense retrieval targets granular "Information Nuggets" (child nodes) for high precision, which are then mapped to their parent contexts for generation.
+*   **Goal**: Maximize retrieval specificity while maintaining contextual integrity.
 
-## Usage
+### Layer 2: Grammar-Constrained Decoding (Generative Hard-Constraint)
+*   **Mechanism**: Utilizes **Retrieval-Dependent Grammars (RDG)**.
+*   **Process**: The grammar is constructed on-the-fly based on retrieved documents. The LLM is restricted at the token-sampling level to only generate citations that exist in the retrieved context.
+*   **Goal**: Mathematically eliminate out-of-context citations during the generation phase.
 
-```
-You: What is this about?
-Answer: [AI answers based on your PDFs]
+### Layer 3: Deterministic Verification (Automated Auditing)
+*   **Mechanism**: Post-generation auditing.
+*   **Process**: A deterministic script verifies that every generated citation ID matches a record in the retrieved list.
+*   **Goal**: Act as a final fail-safe to ensure every response is backed by a verifiable source.
 
-📄 document.pdf:p5, guide.pdf:p12
+## System Architecture
 
-You: exit
-```
+1.  **Ingestion**: Segment raw text into Parent/Child nodes -> Index in Vector DB.
+2.  **Query**: User query processing and dense vector search.
+3.  **Retrieval**: Fetch top-k child nodes and resolve to parent contexts.
+4.  **Generation**: Local LLM generation constrained by RDG to ensure valid citations.
+5.  **Validation**: Automated audit to accept or reject the response.
 
-## Requirements
 
-- Python 3.10+
-- 8GB+ RAM
-- ~6GB disk space
-- MacOS M3 Pro (Metal GPU optimized)
+## Project Structure
 
-**Note**: This project is hardcoded for M3 Metal GPU (`device='mps'`). For other platforms:
-- **Intel Mac/Linux/Windows**: Change `device='mps'` to `device='cpu'` in RAG.py
-- **NVIDIA GPU**: Change to `device='cuda'`
+The repository is organized to support this modular architecture:
 
-## Tech Stack
+*   `src/`: Core implementation of the three layers.
+*   `data/`: Storage for raw corpora, processed chunks, and vector indices.
+*   `benchmark/`: External datasets for evaluation.
+*   `models/`: Local model weights.
+*   `tests/`: Validation suites for each layer.
 
-- **LLM**: Gemma-2-9B-It Q4_K_M (llama.cpp + Metal)
-- **Embeddings**: BAAI/bge-small-en-v1.5
-- **Vector DB**: ChromaDB
-- **Framework**: LangChain
-
-## Configuration
-
-Edit [`RAG.py`](RAG.py):
-
-```python
-CHUNK_SIZE = 500
-CHUNK_OVERLAP = 50
-TOP_K = 4
-N_GPU_LAYERS = 35
-N_CTX = 4096
-N_BATCH = 1024
-```
-
-## Troubleshooting
-
-**No PDFs found**
-```bash
-ls docs/*.pdf
-```
-
-**Out of memory**
-```python
-# In RAG.py:
-N_GPU_LAYERS = 20
-N_CTX = 2048
-N_BATCH = 512
-```
-
-**Metal support issues**
-```bash
-pip uninstall llama-cpp-python -y
-CMAKE_ARGS="-DLLAMA_METAL=on" pip install llama-cpp-python --no-cache-dir
-```
-
-## License
-
-MIT
+---
+*This project is based on the Honours Thesis Proposal by Trung Bao Truong (2025).*
