@@ -7,9 +7,10 @@ venv/
 
 # Models & Data
 models/
-docs/
-ALCE/
-LegalBench-RAG/
+data/raw/
+data/vector_db/
+data/processed/*.json
+benchmark/
 
 *.gguf
 
