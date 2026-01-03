@@ -7,8 +7,10 @@ venv/
 
 # Models & Data
 models/
-docs/chroma/
-docs/**/*.pdf
+docs/
+ALCE/
+LegalBench-RAG/
+
 *.gguf
 
 *.txt
