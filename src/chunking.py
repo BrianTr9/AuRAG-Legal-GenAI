@@ -75,6 +75,24 @@ class HierarchicalChunker:
     5. Context window: 8K tokens fits 1-2 parents + 4-5 children
     """
     
+    # Section detection patterns (priority order: inline → line-separated → colon)
+    SECTION_PATTERNS = [
+        (r'(\d+(?:\.\d+)?)\.\s+([A-Z][^.]*?)\.\s', 'Inline with period'),
+        (r'(?:^\n)(\d+(?:\.\d+)?)\s+([A-Z][^\n]+?)(?=\n|$)', 'Line-separated format'),
+        (r'(\d+(?:\.\d+)?)\s*:\s+([A-Z][^\n:]+?)(?=\n|$)', 'Colon-separated format'),
+    ]
+    
+    # Separator hierarchy (paragraph → sentence → line → clause → word)
+    SEPARATORS = [
+        ('\n\n', 'paragraph'),
+        ('.\n', 'sentence_line'),
+        ('. ', 'sentence'),
+        ('\n', 'line'),
+        ('; ', 'semicolon'),
+        (', ', 'comma'),
+        (' ', 'word'),
+    ]
+    
     def __init__(
         self,
         child_size: int = 300,
@@ -83,7 +101,7 @@ class HierarchicalChunker:
         semantic_boundary_tolerance: int = 30
     ):
         """
-        Initialize chunker
+        Initialize chunker with validation
         
         Args:
             child_size: Target size for child chunks in tokens (default: 300)
@@ -91,7 +109,15 @@ class HierarchicalChunker:
             encoding_name: Tiktoken encoding (default: cl100k_base for GPT-4/Gemma)
             semantic_boundary_tolerance: ±tokens to search for boundaries (default: 30 = ±10%)
         """
-        # Validate inputs
+        self._validate_config(child_size, child_overlap, semantic_boundary_tolerance)
+        
+        self.child_size = child_size
+        self.child_overlap = child_overlap
+        self.semantic_boundary_tolerance = semantic_boundary_tolerance
+        self.tokenizer = tiktoken.get_encoding(encoding_name)
+    
+    def _validate_config(self, child_size: int, child_overlap: int, semantic_boundary_tolerance: int):
+        """Validate initialization parameters"""
         if child_size <= 0:
             raise ValueError("child_size must be positive")
         if child_overlap < 0:
@@ -100,22 +126,6 @@ class HierarchicalChunker:
             raise ValueError("child_overlap must be less than child_size")
         if semantic_boundary_tolerance <= 0:
             raise ValueError("semantic_boundary_tolerance must be positive")
-        
-        self.child_size = child_size
-        self.child_overlap = child_overlap
-        self.semantic_boundary_tolerance = semantic_boundary_tolerance
-        self.tokenizer = tiktoken.get_encoding(encoding_name)
-        
-        # Separator priority (from strongest to weakest boundary)
-        self.separators = [
-            ('\n\n', 'paragraph'),      # Double newline (paragraph break)
-            ('.\n', 'sentence_line'),   # Sentence at line end
-            ('. ', 'sentence'),         # Sentence boundary
-            ('\n', 'line'),             # Single line break
-            ('; ', 'semicolon'),        # Semicolon (clause separator)
-            (', ', 'comma'),            # Comma separator
-            (' ', 'word')               # Word boundary (last resort)
-        ]
     
     def count_tokens(self, text: str) -> int:
         """Count tokens in text using tiktoken"""
@@ -145,31 +155,12 @@ class HierarchicalChunker:
         if not contract_text:
             raise ValueError("contract_text is empty after stripping")
         
-        # Try multiple patterns in priority order
-        # Each pattern is more specific to avoid false positives
-        patterns = [
-            # Pattern 1: Inline with period - "1. Services." or "1.2 Compensation."
-            # Requires: number + dot + space + title + period + space
-            # The dot after number distinguishes from line-separated format
-            (r'(\d+(?:\.\d+)?)\.\s+([A-Z][^.]*?)\.\s', 'Inline with period'),
-            
-            # Pattern 2: Line-separated - "1 Overview" or "1 SERVICE TERMS" (any case)
-            # Requires: line start + number + spaces + title (starts uppercase) + (newline or end)
-            # Title can be: "Overview", "SERVICE TERMS", "Service Delivery", etc.
-            (r'(?:^|\n)(\d+(?:\.\d+)?)\s+([A-Z][^\n]+?)(?=\n|$)', 'Line-separated format'),
-            
-            # Pattern 3: Colon format - "1: Services" or "1: SERVICE TERMS" (any case)
-            # Requires: number + optional spaces + colon + spaces + title (starts uppercase)
-            (r'(\d+(?:\.\d+)?)\s*:\s+([A-Z][^\n:]+?)(?=\n|$)', 'Colon-separated format'),
-        ]
-        
+        # Try patterns in priority order (DRY: use class constant)
         matches = []
-        used_pattern_idx = -1
         
-        for pattern_idx, (pattern, pattern_name) in enumerate(patterns):
+        for pattern_idx, (pattern, pattern_name) in enumerate(self.SECTION_PATTERNS):
             matches = list(re.finditer(pattern, contract_text, re.MULTILINE))
             if matches:
-                used_pattern_idx = pattern_idx
                 print(f"📋 Found {len(matches)} sections using pattern {pattern_idx + 1} ({pattern_name})")
                 break
         
@@ -240,42 +231,25 @@ class HierarchicalChunker:
         
         return result_sections
     
-    def create_parent_chunks(
-        self,
-        sections: List[Dict],
-        contract_id: str = "contract"
-    ) -> List[Chunk]:
-        """
-        Create parent chunks from sections
-        
-        Strategy: Each section becomes ONE parent chunk (full context)
-        No size limit - legal text requires complete context
-        
-        Args:
-            sections: List of extracted sections
-            contract_id: Identifier for the source contract
-            
-        Returns:
-            List of parent Chunk objects
-        """
-        parents = []
-        
-        for sec in sections:
-            parent = Chunk(
-                text=sec['text'],
-                chunk_id=f"parent_{sec['section_num']}",
-                chunk_type="parent",
-                parent_id=None,  # Parents have no parent
-                section_num=sec['section_num'],
-                section_title=sec['title'],
-                token_count=sec['token_count'],
-                char_start=sec['char_start'],
-                char_end=sec['char_end'],
-                contract_id=contract_id
-            )
-            parents.append(parent)
-        
-        return parents
+    @staticmethod
+    def _section_to_parent_chunk(sec: Dict, contract_id: str) -> Chunk:
+        """Convert section dict to parent Chunk object"""
+        return Chunk(
+            text=sec['text'],
+            chunk_id=f"parent_{sec['section_num']}",
+            chunk_type="parent",
+            parent_id=None,
+            section_num=sec['section_num'],
+            section_title=sec['title'],
+            token_count=sec['token_count'],
+            char_start=sec['char_start'],
+            char_end=sec['char_end'],
+            contract_id=contract_id
+        )
+    
+    def create_parent_chunks(self, sections: List[Dict], contract_id: str = "contract") -> List[Chunk]:
+        """Create parent chunks from sections (one chunk per section)"""
+        return [self._section_to_parent_chunk(sec, contract_id) for sec in sections]
     
     def split_by_separators(self, text: str, target_size: int) -> List[str]:
         """
@@ -293,8 +267,8 @@ class HierarchicalChunker:
         if self.count_tokens(text) <= target_size:
             return [text]
         
-        # Try each separator in priority order
-        for separator, sep_name in self.separators:
+        # Try each separator in priority order (DRY: use class constant)
+        for separator, sep_name in self.SEPARATORS:
             parts = text.split(separator)
             
             if len(parts) <= 1:
@@ -375,20 +349,14 @@ class HierarchicalChunker:
         search_tokens = tokens[start_search:end_search]
         search_text = self.tokenizer.decode(search_tokens)
         
-        # Define separators by priority
-        separators = [
-            '\n\n',   # Paragraph break (highest priority)
-            '.\n',    # Sentence at line end
-            '. ',     # Sentence with space
-            '\n',     # Line break
-            '; ',     # Semicolon with space
-            ', ',     # Comma with space
-        ]
+        # Use class constant separators (DRY), limit to most relevant ones
+        # (exclude last one: word - too fine-grained for boundaries)
+        boundary_separators = self.SEPARATORS[:-1]
         
         best_boundary = None
         best_priority = -1
         
-        for priority, sep in enumerate(separators):
+        for priority, (sep, _) in enumerate(boundary_separators):
             # Find all occurrences of this separator
             positions = []
             offset = 0
@@ -425,36 +393,14 @@ class HierarchicalChunker:
         # Return best boundary or target if none found
         return best_boundary if best_boundary is not None else target_pos
     
-    def create_child_chunks(
-        self,
-        parent: Chunk
-    ) -> List[Chunk]:
-        """
-        Create child chunks from parent with sliding window overlap
-        AND semantic boundary detection
-        
-        Strategy: 
-        1. Target 300-token chunks with 90-token overlap
-        2. Adjust boundaries to respect semantic markers
-        3. Priority: paragraph → sentence → line → clause → comma
-        4. Handle edge case: small parents (< child_size) create single child
-        
-        Args:
-            parent: Parent chunk to split
-            
-        Returns:
-            List of child Chunk objects
-            
-        Raises:
-            ValueError: If parent.text is empty
-        """
+    def create_child_chunks(self, parent: Chunk) -> List[Chunk]:
+        """Create child chunks from parent with sliding window overlap and semantic boundaries"""
         # Validate input
         if not parent.text or not isinstance(parent.text, str):
             raise ValueError(f"Parent {parent.chunk_id} has empty text")
         
         # Tokenize entire parent text
         parent_tokens = self.tokenizer.encode(parent.text)
-        
         if len(parent_tokens) == 0:
             return []
         
@@ -467,8 +413,7 @@ class HierarchicalChunker:
             # Target end position
             target_end = min(position + self.child_size, len(parent_tokens))
             
-            # Find semantic boundary near target
-            # Only adjust if not at document end
+            # Find semantic boundary near target (only if not at end)
             if target_end < len(parent_tokens):
                 actual_end = self.find_semantic_boundary(
                     parent_tokens, 
@@ -478,10 +423,8 @@ class HierarchicalChunker:
             else:
                 actual_end = target_end
             
-            # Extract chunk tokens
+            # Extract and decode chunk
             chunk_tokens = parent_tokens[position:actual_end]
-            
-            # Decode to text
             chunk_text = self.tokenizer.decode(chunk_tokens)
             
             # Create child chunk
@@ -518,14 +461,16 @@ class HierarchicalChunker:
     def chunk_contract(
         self,
         contract_text: str,
-        contract_id: str = "contract_001"
+        contract_id: str = "contract_001",
+        output_path: str = None
     ) -> Tuple[List[Chunk], List[Chunk]]:
         """
-        Main chunking pipeline
+        Main chunking pipeline with optional save
         
         Args:
             contract_text: Full contract text
             contract_id: Identifier for this contract
+            output_path: Optional path to save chunks as JSON
             
         Returns:
             Tuple of (parent_chunks, child_chunks)
@@ -565,22 +510,14 @@ class HierarchicalChunker:
             print(f"   Min: {min(child_tokens)} tokens")
             print(f"   Max: {max(child_tokens)} tokens")
         
+        # Save if path provided
+        if output_path:
+            self.save_chunks(parents, all_children, output_path)
+        
         return parents, all_children
     
-    def save_chunks(
-        self,
-        parents: List[Chunk],
-        children: List[Chunk],
-        output_path: str
-    ):
-        """
-        Save chunks to JSON file with full metadata
-        
-        Args:
-            parents: List of parent chunks
-            children: List of child chunks
-            output_path: Path to save JSON file
-        """
+    def save_chunks(self, parents: List[Chunk], children: List[Chunk], output_path: str):
+        """Save chunks to JSON file with full metadata"""
         data = {
             'metadata': {
                 'child_size': self.child_size,
