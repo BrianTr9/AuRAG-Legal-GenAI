@@ -79,7 +79,8 @@ class HierarchicalChunker:
         self,
         child_size: int = 300,
         child_overlap: int = 90,
-        encoding_name: str = "cl100k_base"
+        encoding_name: str = "cl100k_base",
+        semantic_boundary_tolerance: int = 30
     ):
         """
         Initialize chunker
@@ -88,9 +89,21 @@ class HierarchicalChunker:
             child_size: Target size for child chunks in tokens (default: 300)
             child_overlap: Overlap between consecutive children in tokens (default: 90 = 30%)
             encoding_name: Tiktoken encoding (default: cl100k_base for GPT-4/Gemma)
+            semantic_boundary_tolerance: ±tokens to search for boundaries (default: 30 = ±10%)
         """
+        # Validate inputs
+        if child_size <= 0:
+            raise ValueError("child_size must be positive")
+        if child_overlap < 0:
+            raise ValueError("child_overlap cannot be negative")
+        if child_overlap >= child_size:
+            raise ValueError("child_overlap must be less than child_size")
+        if semantic_boundary_tolerance <= 0:
+            raise ValueError("semantic_boundary_tolerance must be positive")
+        
         self.child_size = child_size
         self.child_overlap = child_overlap
+        self.semantic_boundary_tolerance = semantic_boundary_tolerance
         self.tokenizer = tiktoken.get_encoding(encoding_name)
         
         # Separator priority (from strongest to weakest boundary)
@@ -115,10 +128,22 @@ class HierarchicalChunker:
         Expected format: "1.1 Provision of Services." or "2. Compensation." in running text
         Strategy: Group subsections (1.1, 1.2) into major section (1)
         
+        Args:
+            contract_text: Text to extract sections from
+            
         Returns:
             List of section dictionaries with metadata
+            
+        Raises:
+            ValueError: If contract_text is empty or None
         """
-        sections = []
+        # Validate input
+        if not contract_text or not isinstance(contract_text, str):
+            raise ValueError("contract_text must be non-empty string")
+        
+        contract_text = contract_text.strip()
+        if not contract_text:
+            raise ValueError("contract_text is empty after stripping")
         
         # Pattern matches numbered section format:
         # "1. Services." or "2.1 Provision of Services."
@@ -177,6 +202,11 @@ class HierarchicalChunker:
                 end_pos = len(contract_text)
             
             section_text = contract_text[start_pos:end_pos].strip()
+            
+            # Skip empty sections
+            if not section_text:
+                print(f"  ⊘ Skipping empty Section {major_num}")
+                continue
             
             result_sections.append({
                 'section_num': major_num,
@@ -296,7 +326,7 @@ class HierarchicalChunker:
         self,
         tokens: list,
         target_pos: int,
-        tolerance: int = 30
+        tolerance: int = None
     ) -> int:
         """
         Find semantic boundary near target position
@@ -306,11 +336,13 @@ class HierarchicalChunker:
         Args:
             tokens: List of tokens
             target_pos: Target position to find boundary near
-            tolerance: Search range ±tolerance from target
+            tolerance: Search range ±tolerance from target. If None, uses self.semantic_boundary_tolerance
             
         Returns:
             Best boundary position, or target_pos if none found
         """
+        if tolerance is None:
+            tolerance = self.semantic_boundary_tolerance
         # Search range
         start_search = max(0, target_pos - tolerance)
         end_search = min(len(tokens), target_pos + tolerance)
@@ -384,25 +416,28 @@ class HierarchicalChunker:
         1. Target 300-token chunks with 90-token overlap
         2. Adjust boundaries to respect semantic markers
         3. Priority: paragraph → sentence → line → clause → comma
+        4. Handle edge case: small parents (< child_size) create single child
         
         Args:
             parent: Parent chunk to split
             
         Returns:
             List of child Chunk objects
+            
+        Raises:
+            ValueError: If parent.text is empty
         """
+        # Validate input
+        if not parent.text or not isinstance(parent.text, str):
+            raise ValueError(f"Parent {parent.chunk_id} has empty text")
+        
         # Tokenize entire parent text
         parent_tokens = self.tokenizer.encode(parent.text)
         
         if len(parent_tokens) == 0:
             return []
         
-        # Calculate stride (step size between chunks)
-        stride = self.child_size - self.child_overlap
-        
-        if stride <= 0:
-            stride = self.child_size
-        
+        # Create child chunks with overlap
         children = []
         chunk_idx = 0
         position = 0
@@ -417,7 +452,7 @@ class HierarchicalChunker:
                 actual_end = self.find_semantic_boundary(
                     parent_tokens, 
                     target_end,
-                    tolerance=30  # ±30 tokens = ±10% flexibility
+                    tolerance=self.semantic_boundary_tolerance
                 )
             else:
                 actual_end = target_end
@@ -443,9 +478,14 @@ class HierarchicalChunker:
             )
             children.append(child)
             
-            # Move forward by stride (creates overlap)
-            # Next chunk starts at (actual_end - overlap)
-            position = actual_end - self.child_overlap
+            # Move forward with overlap
+            # Next chunk starts at (actual_end - overlap) to maintain 30% overlap
+            position = max(actual_end - self.child_overlap, actual_end)
+            
+            # Prevent infinite loop if position doesn't advance
+            if position == actual_end and position < len(parent_tokens):
+                position = min(position + 1, len(parent_tokens))
+            
             chunk_idx += 1
             
             # Stop if we've covered the entire text
@@ -537,6 +577,27 @@ class HierarchicalChunker:
         print(f"\n💾 Saved chunks to: {output_path}")
 
 
+    @staticmethod
+    def build_parent_child_mapping(parents: List['Chunk'], children: List['Chunk']) -> Dict[str, List[str]]:
+        """
+        Build mapping from parent chunk IDs to their child chunk IDs
+        
+        Args:
+            parents: List of parent chunks
+            children: List of child chunks
+            
+        Returns:
+            Dictionary mapping parent_id -> [child_ids]
+        """
+        parent_to_children = {}
+        for parent in parents:
+            parent_to_children[parent.chunk_id] = [
+                child.chunk_id for child in children 
+                if child.parent_id == parent.chunk_id
+            ]
+        return parent_to_children
+
+
 # ==================== DEMO ====================
 
 def demo():
@@ -570,6 +631,10 @@ def demo():
         contract_text,
         contract_id=contract_path.stem
     )
+    
+    # Build parent-child mapping
+    parent_to_children = HierarchicalChunker.build_parent_child_mapping(parents, children)
+    print(f"\n✓ Created {len(parent_to_children)} parent-child mappings")
     
     # Display samples
     print("\n" + "="*60)
@@ -612,6 +677,97 @@ def demo():
     print(f"  2. Store parent_id in metadata")
     print(f"  3. Retrieve top-K children → deduplicate to parents")
     print(f"  4. Pass parents to LLM (Gemma-2-9B-It)")
+
+
+# ==========================================
+# LAYER 1: RETRIEVAL COMPONENTS
+# ==========================================
+
+class HierarchicalRetriever:
+    """
+    Retriever that implements hierarchical retrieval strategy:
+    1. Search for child chunks (high precision)
+    2. Expand to parent chunks (full context)
+    
+    This is the retrieval component of Layer 1.
+    """
+    
+    def __init__(
+        self, 
+        vectordb,
+        parent_chunks: List['Chunk'], 
+        parent_to_children: Dict[str, List[str]],
+        top_k: int = 4,
+        context_budget: int = 3000
+    ):
+        """
+        Initialize hierarchical retriever
+        
+        Args:
+            vectordb: ChromaDB or similar vector database
+            parent_chunks: List of parent Chunk objects
+            parent_to_children: Mapping of parent_id → [child_ids]
+            top_k: Number of child chunks to retrieve
+            context_budget: Maximum tokens allowed in context (default 3000, leaving 1K for generation in 4K window)
+        """
+        self.vectordb = vectordb
+        self.parent_chunks = {p.chunk_id: p for p in parent_chunks}
+        self.parent_to_children = parent_to_children
+        self.top_k = top_k
+        self.context_budget = context_budget
+    
+    def get_relevant_documents(self, query: str):
+        """
+        Hierarchical retrieval pipeline with token budget constraint:
+        
+        1. Dense search on child chunks (sparse, high precision)
+        2. Map children to parent chunks (deduplication)
+        3. Return ONLY parent chunks as context (full sections)
+        
+        Args:
+            query: User query
+            
+        Returns:
+            List of parent documents only (children used only for ranking)
+        """
+        # Step 1: Search for child chunks (for ranking/precision)
+        child_docs = self.vectordb.similarity_search(query, k=self.top_k)
+        
+        expanded_docs = []
+        seen_parents = set()
+        total_tokens = 0
+        
+        # Step 2: Map children to parents and add ONLY parents
+        for child_doc in child_docs:
+            parent_id = child_doc.metadata.get('parent_id')
+            
+            if parent_id and parent_id not in seen_parents:
+                parent_chunk = self.parent_chunks.get(parent_id)
+                if parent_chunk:
+                    parent_tokens = parent_chunk.token_count
+                    
+                    # Only add parent if it doesn't exceed budget
+                    if total_tokens + parent_tokens <= self.context_budget:
+                        from langchain_core.documents import Document
+                        parent_doc = Document(
+                            page_content=parent_chunk.text,
+                            metadata={
+                                'chunk_id': parent_chunk.chunk_id,
+                                'chunk_type': 'parent',
+                                'section_num': parent_chunk.section_num,
+                                'section_title': parent_chunk.section_title,
+                                'token_count': parent_chunk.token_count,
+                            }
+                        )
+                        expanded_docs.append(parent_doc)
+                        total_tokens += parent_tokens
+                        seen_parents.add(parent_id)
+        
+        return expanded_docs
+    
+    def invoke(self, query: str):
+        """LangChain-compatible invoke method (alias for get_relevant_documents)"""
+        return self.get_relevant_documents(query)
 
 
 if __name__ == "__main__":
