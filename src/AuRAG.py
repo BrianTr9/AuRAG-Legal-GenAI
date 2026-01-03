@@ -53,8 +53,17 @@ N_GPU_LAYERS = -1     # All layers on GPU (-1 = auto detect)
 N_CTX = 8192          # Full context window for Gemma-2-9B (8K tokens)
 N_BATCH = 1024        # Larger batch for faster processing
 
+# LLM Generation Configuration
+MAX_TOKENS = 256      # Max output tokens (legal Q&A: 200-250 words typical)
+                      # Sweet spot: 256 = 30-40% faster than 512, sufficient for contract queries
+                      # Adjust based on: longer_answers=512, concise_answers=128
+
 # Retrieval & Context Configuration
-CONTEXT_BUDGET = 4500  # Max tokens for context (~5.6K for context, 2.5K for generation in 8K window)
+CONTEXT_BUDGET = 4500  # Max tokens for retrieved context documents
+                       # Token allocation in 8K context window:
+                       #   - Context (retrieved docs): 4500 tokens
+                       #   - Generation (answer): 256 tokens
+                       #   - Prompt + Question + Buffer: ~3436 tokens
 
 # ==========================================
 # HELPER FUNCTIONS
@@ -185,7 +194,7 @@ print("\nLoading LLM...")
 llm = LlamaCpp(
     model_path=llm_model_path,
     temperature=0,
-    max_tokens=256,  # Optimized for legal Q&A (30-40% faster than 512)
+    max_tokens=MAX_TOKENS,
     n_ctx=N_CTX,
     n_batch=N_BATCH,
     n_gpu_layers=N_GPU_LAYERS if USE_METAL_GPU else 0,  # Metal GPU acceleration
