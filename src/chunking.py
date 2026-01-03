@@ -145,12 +145,33 @@ class HierarchicalChunker:
         if not contract_text:
             raise ValueError("contract_text is empty after stripping")
         
-        # Pattern matches numbered section format:
-        # "1. Services." or "2.1 Provision of Services."
-        pattern = r'(\d+(?:\.\d+)?)\s+([A-Z][^.]+)\.\s'
+        # Try multiple patterns in priority order
+        # Each pattern is more specific to avoid false positives
+        patterns = [
+            # Pattern 1: Inline with period - "1. Services." or "1.2 Compensation."
+            # Requires: number + dot + space + title + period + space
+            # The dot after number distinguishes from line-separated format
+            (r'(\d+(?:\.\d+)?)\.\s+([A-Z][^.]*?)\.\s', 'Inline with period'),
+            
+            # Pattern 2: Line-separated - "1 Overview" or "1 SERVICE TERMS" (any case)
+            # Requires: line start + number + spaces + title (starts uppercase) + (newline or end)
+            # Title can be: "Overview", "SERVICE TERMS", "Service Delivery", etc.
+            (r'(?:^|\n)(\d+(?:\.\d+)?)\s+([A-Z][^\n]+?)(?=\n|$)', 'Line-separated format'),
+            
+            # Pattern 3: Colon format - "1: Services" or "1: SERVICE TERMS" (any case)
+            # Requires: number + optional spaces + colon + spaces + title (starts uppercase)
+            (r'(\d+(?:\.\d+)?)\s*:\s+([A-Z][^\n:]+?)(?=\n|$)', 'Colon-separated format'),
+        ]
         
-        # Find all section markers
-        matches = list(re.finditer(pattern, contract_text))
+        matches = []
+        used_pattern_idx = -1
+        
+        for pattern_idx, (pattern, pattern_name) in enumerate(patterns):
+            matches = list(re.finditer(pattern, contract_text, re.MULTILINE))
+            if matches:
+                used_pattern_idx = pattern_idx
+                print(f"📋 Found {len(matches)} sections using pattern {pattern_idx + 1} ({pattern_name})")
+                break
         
         if not matches:
             print("⚠️  No structured sections found, using entire document as one parent")
