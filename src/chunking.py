@@ -656,8 +656,7 @@ class HierarchicalRetriever:
         parent_chunks: List['Chunk'], 
         parent_to_children: Dict[str, List[str]],
         top_k: int = 4,
-        context_budget: int = 3000,
-        max_parent_tokens: int = 1500
+        context_budget: int = 3000
     ):
         """
         Initialize hierarchical retriever
@@ -668,14 +667,12 @@ class HierarchicalRetriever:
             parent_to_children: Mapping of parent_id → [child_ids]
             top_k: Number of child chunks to retrieve
             context_budget: Maximum tokens allowed in context (default 3000, leaving 1K for generation in 4K window)
-            max_parent_tokens: Maximum tokens per individual parent chunk (default 1500, ensures diversity)
         """
         self.vectordb = vectordb
         self.parent_chunks = {p.chunk_id: p for p in parent_chunks}
         self.parent_to_children = parent_to_children
         self.top_k = top_k
         self.context_budget = context_budget
-        self.max_parent_tokens = max_parent_tokens
     
     def get_relevant_documents(self, query: str):
         """
@@ -707,9 +704,8 @@ class HierarchicalRetriever:
                 if parent_chunk:
                     parent_tokens = parent_chunk.token_count
                     
-                    # Only add parent if it doesn't exceed budget and size limit
-                    if (parent_tokens <= self.max_parent_tokens and
-                        total_tokens + parent_tokens <= self.context_budget):
+                    # Only add parent if it doesn't exceed budget
+                    if total_tokens + parent_tokens <= self.context_budget:
                         from langchain_core.documents import Document
                         parent_doc = Document(
                             page_content=parent_chunk.text,
