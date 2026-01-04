@@ -7,21 +7,22 @@ Local RAG with Defense-in-Depth architecture:
 - Layer 3: Deterministic Verification (planned)
 
 Core Components:
-- LLM: Gemma-2-9B-It (llama.cpp)
+- LLM: Llama-3.1-8B-Instruct (via Ollama)
 - Embeddings: BAAI/bge-small-en-v1.5
 - Vector DB: ChromaDB (local)
 - Chunking: Hierarchical with semantic boundaries
+
+Setup: ollama pull llama3.1:8b-instruct
 """
 
 import os
 import json
 import shutil
 from typing import List, Dict, Tuple
-from huggingface_hub import hf_hub_download
 from langchain_community.document_loaders import PyPDFLoader, DirectoryLoader, TextLoader
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
-from langchain_community.llms import LlamaCpp
+from langchain_ollama import OllamaLLM
 from langchain_core.callbacks import StreamingStdOutCallbackHandler, CallbackManager
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
@@ -36,11 +37,11 @@ from chunking import HierarchicalChunker, Chunk, HierarchicalRetriever
 # ==========================================
 DOCS_FOLDER = "data/raw"
 CHROMA_DIR = "data/vector_db/chroma/"
-MODELS_DIR = "models"
 CHUNKS_OUTPUT = "data/processed/chunks.json"
 
-LLM_REPO = "lmstudio-community/gemma-2-9b-it-GGUF"
-LLM_FILENAME = "gemma-2-9b-it-Q4_K_M.gguf"
+# Ollama model configuration
+OLLAMA_MODEL = "llama3.1"  # Uses auto-selected variant; full name: llama3.1:8b-instruct
+OLLAMA_BASE_URL = "http://localhost:11434"  # Default Ollama server
 
 # Layer 1: Hierarchical Chunking Configuration
 CHILD_CHUNK_SIZE = 300      # Tokens per child chunk
@@ -50,8 +51,7 @@ TOP_K = 4                    # Top-k children to retrieve
 # M3 Pro Optimization
 USE_METAL_GPU = True  # Metal acceleration for M3
 N_GPU_LAYERS = -1     # All layers on GPU (-1 = auto detect)
-N_CTX = 8192          # Full context window for Gemma-2-9B (8K tokens)
-N_BATCH = 1024        # Larger batch for faster processing
+N_CTX = 131072        # 128K context window for Llama-3.1-8B
 
 # LLM Generation Configuration
 MAX_TOKENS = 256      # Max output tokens (legal Q&A: 200-250 words typical)
@@ -59,11 +59,11 @@ MAX_TOKENS = 256      # Max output tokens (legal Q&A: 200-250 words typical)
                       # Adjust based on: longer_answers=512, concise_answers=128
 
 # Retrieval & Context Configuration
-CONTEXT_BUDGET = 4500  # Max tokens for retrieved context documents
-                       # Token allocation in 8K context window:
-                       #   - Context (retrieved docs): 4500 tokens
-                       #   - Generation (answer): 256 tokens
-                       #   - Prompt + Question + Buffer: ~3436 tokens
+CONTEXT_BUDGET = 100000  # Max tokens for retrieved context documents (for 128K models)
+                         # Example allocation for 128K window:
+                         #   - Context (retrieved docs): 100000 tokens
+                         #   - Generation (answer): 256 tokens
+                         #   - Prompt + Question + Buffer: ~30816 tokens
 
 # ==========================================
 # HELPER FUNCTIONS
@@ -90,16 +90,18 @@ def _load_documents(folder: str) -> List[Document]:
     return docs
 
 # ==========================================
-# 1. LOAD MODEL
+# 1. INITIALIZE OLLAMA LLM
 # ==========================================
-print("Downloading model...")
-llm_model_path = hf_hub_download(
-    repo_id=LLM_REPO,
-    filename=LLM_FILENAME,
-    cache_dir=MODELS_DIR,
-    resume_download=True,
+print(f"Connecting to Ollama ({OLLAMA_MODEL})...")
+print(f"  Note: If model not found, run: ollama pull {OLLAMA_MODEL}")
+llm = OllamaLLM(
+    model=OLLAMA_MODEL,
+    base_url=OLLAMA_BASE_URL,
+    temperature=0,
+    num_ctx=N_CTX,
+    num_predict=MAX_TOKENS,
 )
-print(f"Model ready: {llm_model_path}")
+print(f"✓ Connected to {OLLAMA_MODEL}")
 
 # ==========================================
 # 2. LOAD & CHUNK DOCUMENTS (LAYER 1)
@@ -188,22 +190,7 @@ vectordb = Chroma.from_documents(
 print(f"✓ Created {vectordb._collection.count()} vectors")
 
 # ==========================================
-# 4. INITIALIZE LLM
-# ==========================================
-print("\nLoading LLM...")
-llm = LlamaCpp(
-    model_path=llm_model_path,
-    temperature=0,
-    max_tokens=MAX_TOKENS,
-    n_ctx=N_CTX,
-    n_batch=N_BATCH,
-    n_gpu_layers=N_GPU_LAYERS if USE_METAL_GPU else 0,  # Metal GPU acceleration
-    callback_manager=CallbackManager([StreamingStdOutCallbackHandler()]),
-    verbose=False,
-)
-
-# ==========================================
-# 5. CREATE QA CHAIN WITH HIERARCHICAL RETRIEVAL
+# 4. CREATE QA CHAIN WITH HIERARCHICAL RETRIEVAL
 # ==========================================
 print("Creating QA chain with Layer 1 (Hierarchical Retrieval)...")
 

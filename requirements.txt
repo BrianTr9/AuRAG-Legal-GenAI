@@ -7,6 +7,7 @@ langchain-community>=0.0.20
 langchain-core>=0.1.0
 langchain-chroma>=0.1.0
 langchain-text-splitters>=0.0.1
+langchain-ollama>=0.1.0
 
 # Vector Store
 chromadb>=0.4.0
@@ -14,8 +15,9 @@ chromadb>=0.4.0
 # Document Processing
 pypdf>=3.17.0
 
-# Local LLM
-llama-cpp-python>=0.2.0
+# Local LLM (via Ollama)
+# Requirements: ollama pull llama3.1
+ollama>=0.6.0
 
 # Embeddings
 sentence-transformers>=2.2.0
