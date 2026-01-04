@@ -64,6 +64,9 @@ CONTEXT_BUDGET = 4500  # Max tokens for retrieved context documents
                        #   - Context (retrieved docs): 4500 tokens
                        #   - Generation (answer): 256 tokens
                        #   - Prompt + Question + Buffer: ~3436 tokens
+MAX_PARENT_TOKENS = 1500  # Max tokens per individual parent chunk
+                          # Ensures diversity: 4500 budget / 1500 per parent = 3 parents minimum
+                          # Prevents single large parent from monopolizing context budget
 
 # ==========================================
 # HELPER FUNCTIONS
