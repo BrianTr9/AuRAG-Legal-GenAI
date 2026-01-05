@@ -251,7 +251,7 @@ class HierarchicalChunker:
         """Convert section dict to parent Chunk object"""
         return Chunk(
             text=sec['text'],
-            chunk_id=f"parent_{sec['section_num']}",
+            chunk_id=f"{contract_id}_parent_{sec['section_num']}",
             chunk_type="parent",
             parent_id=None,
             section_num=sec['section_num'],
