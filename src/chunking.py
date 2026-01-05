@@ -75,8 +75,9 @@ class HierarchicalChunker:
     5. Context window: 8K tokens fits 1-2 parents + 4-5 children
     """
     
-    # Section detection patterns (priority order: inline → line-separated → colon)
+    # Section detection patterns (priority order: inline → line-separated → colon → ARTICLE)
     SECTION_PATTERNS = [
+        (r'ARTICLE\s+([IVX]+)\s*:\s+([A-Z][^\n]+?)(?=\n|$)', 'ARTICLE Roman numeral format'),
         (r'(\d+(?:\.\d+)?)\.\s+([A-Z][^.]*?)\.\s', 'Inline with period'),
         (r'(?:^\n)(\d+(?:\.\d+)?)\s+([A-Z][^\n]+?)(?=\n|$)', 'Line-separated format'),
         (r'(\d+(?:\.\d+)?)\s*:\s+([A-Z][^\n:]+?)(?=\n|$)', 'Colon-separated format'),
@@ -200,7 +201,15 @@ class HierarchicalChunker:
         
         # Now determine end positions for each major section
         result_sections = []
-        major_nums = sorted(major_sections.keys(), key=int)
+        # Sort by match order (not by numeric value) - preserve document order
+        major_nums = list(major_sections.keys())
+        
+        # Try to sort numerically if all keys are numeric, otherwise preserve order
+        try:
+            major_nums = sorted(major_nums, key=lambda x: int(x))
+        except ValueError:
+            # Keys are not numeric (e.g., Roman numerals), keep original order
+            major_nums = sorted(major_nums, key=lambda x: major_sections[x]['first_match_idx'])
         
         for idx, major_num in enumerate(major_nums):
             sec = major_sections[major_num]
@@ -213,20 +222,26 @@ class HierarchicalChunker:
             else:
                 end_pos = len(contract_text)
             
-            section_text = contract_text[start_pos:end_pos].strip()
+            section_text = contract_text[start_pos:end_pos]
             
-            # Skip empty sections
-            if not section_text:
+            # Skip empty sections (check stripped version but keep original text)
+            if not section_text.strip():
                 print(f"  ⊘ Skipping empty Section {major_num}")
                 continue
+            
+            # Calculate actual start/end by stripping whitespace from boundaries
+            # while keeping the text and char positions aligned
+            stripped_text = section_text.strip()
+            leading_ws = len(section_text) - len(section_text.lstrip())
+            trailing_ws = len(section_text) - len(section_text.rstrip())
             
             result_sections.append({
                 'section_num': major_num,
                 'title': sec['title'],
-                'text': section_text,
-                'char_start': start_pos,
-                'char_end': end_pos,
-                'token_count': self.count_tokens(section_text)
+                'text': stripped_text,
+                'char_start': start_pos + leading_ws,
+                'char_end': end_pos - trailing_ws,
+                'token_count': self.count_tokens(stripped_text)
             })
         
         return result_sections
@@ -381,6 +396,10 @@ class HierarchicalChunker:
             tokens_before = self.tokenizer.encode(text_before)
             boundary_token_pos = start_search + len(tokens_before)
             
+            # VALIDATE: Check if boundary is within tolerance range ✓
+            if not (start_search <= boundary_token_pos <= end_search):
+                continue  # Skip boundaries outside tolerance window
+            
             # Check if this is better than previous
             if best_boundary is None or priority < best_priority:
                 best_boundary = boundary_token_pos
@@ -404,6 +423,14 @@ class HierarchicalChunker:
         if len(parent_tokens) == 0:
             return []
         
+        # Pre-calculate token-to-char position mapping for accurate char positions ✓
+        # Maps token position -> character position in parent.text
+        token_to_char = {}
+        for pos in range(len(parent_tokens) + 1):
+            chunk_tokens = parent_tokens[:pos]
+            chunk_text = self.tokenizer.decode(chunk_tokens)
+            token_to_char[pos] = len(chunk_text)
+        
         # Create child chunks with overlap
         children = []
         chunk_idx = 0
@@ -426,6 +453,18 @@ class HierarchicalChunker:
             # Extract and decode chunk
             chunk_tokens = parent_tokens[position:actual_end]
             chunk_text = self.tokenizer.decode(chunk_tokens)
+            token_count = len(chunk_tokens)
+            
+            # Validate child size (allow 20% tolerance) ✓
+            max_allowed_tokens = int(self.child_size * 1.2)
+            if token_count > max_allowed_tokens:
+                print(f"⚠️  Child {chunk_idx} exceeds size limit: {token_count} > {max_allowed_tokens} tokens")
+            
+            # Calculate accurate char positions using token-to-char mapping ✓
+            char_start_in_parent = token_to_char[position]
+            char_end_in_parent = token_to_char[actual_end]
+            chunk_char_start = parent.char_start + char_start_in_parent
+            chunk_char_end = parent.char_start + char_end_in_parent
             
             # Create child chunk
             child = Chunk(
@@ -435,20 +474,20 @@ class HierarchicalChunker:
                 parent_id=parent.chunk_id,
                 section_num=parent.section_num,
                 section_title=parent.section_title,
-                token_count=len(chunk_tokens),
-                char_start=parent.char_start,
-                char_end=parent.char_end,
+                token_count=token_count,
+                char_start=chunk_char_start,
+                char_end=chunk_char_end,
                 contract_id=parent.contract_id
             )
             children.append(child)
             
-            # Move forward with overlap
+            # Move forward with overlap ✓ (Fixed: was max(actual_end - overlap, actual_end))
             # Next chunk starts at (actual_end - overlap) to maintain 30% overlap
-            position = max(actual_end - self.child_overlap, actual_end)
+            position = actual_end - self.child_overlap
             
             # Prevent infinite loop if position doesn't advance
-            if position == actual_end and position < len(parent_tokens):
-                position = min(position + 1, len(parent_tokens))
+            if position <= 0 or position >= actual_end:
+                position = actual_end
             
             chunk_idx += 1
             

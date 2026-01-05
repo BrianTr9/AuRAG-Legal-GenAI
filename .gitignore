@@ -9,7 +9,8 @@ venv/
 models/
 data/raw/
 data/vector_db/
-data/processed/*.json
+data/processed/
+tests/
 benchmark/
 
 *.gguf
