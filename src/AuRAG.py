@@ -30,7 +30,7 @@ from langchain_core.runnables import RunnablePassthrough, RunnableParallel
 from langchain_core.output_parsers import StrOutputParser
 
 # Import Layer 1 implementation
-from chunking import HierarchicalChunker, Chunk, HierarchicalRetriever
+from SPHR import HierarchicalChunker, Chunk, HierarchicalRetriever
 
 # ==========================================
 # CONFIGURATION
