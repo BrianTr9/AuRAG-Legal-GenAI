@@ -75,9 +75,18 @@ class HierarchicalChunker:
     5. Context window: 8K tokens fits 1-2 parents + 4-5 children
     """
     
-    # Section detection patterns (priority order: inline → line-separated → colon → ARTICLE)
+    # Section detection patterns (priority order: formal ARTICLE → bare Roman → decimal formats)
     SECTION_PATTERNS = [
-        (r'ARTICLE\s+([IVX]+)\s*:\s+([A-Z][^\n]+?)(?=\n|$)', 'ARTICLE Roman numeral format'),
+        # Formal ARTICLE patterns (highest priority - most specific)
+        (r'ARTICLE\s+([IVX]+)\s*-\s+([A-Z][^\n]+?)(?=\n|$)', 'ARTICLE Roman numeral dash format'),
+        (r'ARTICLE\s+([IVX]+)\s*:\s+([A-Z][^\n]+?)(?=\n|$)', 'ARTICLE Roman numeral colon format'),
+        (r'ARTICLE\s+(\d+)\s*-\s+([A-Z][^\n]+?)(?=\n|$)', 'ARTICLE decimal dash format'),
+        (r'[Aa]rticle\s+([IVX]+)\s*\.\s*([A-Z][^\n]+?)(?=\n|$)', 'Article Roman period format'),
+        
+        # Bare Roman numerals (specific format)
+        (r'^([IVX]+)\.\s+([A-Z][^\n]+?)$', 'Bare Roman numeral period format'),
+        
+        # Decimal patterns (more general)
         (r'(\d+(?:\.\d+)?)\.\s+([A-Z][^.]*?)\.\s', 'Inline with period'),
         (r'(?:^\n)(\d+(?:\.\d+)?)\s+([A-Z][^\n]+?)(?=\n|$)', 'Line-separated format'),
         (r'(\d+(?:\.\d+)?)\s*:\s+([A-Z][^\n:]+?)(?=\n|$)', 'Colon-separated format'),
