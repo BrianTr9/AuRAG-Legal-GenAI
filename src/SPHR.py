@@ -210,15 +210,8 @@ class HierarchicalChunker:
         
         # Now determine end positions for each major section
         result_sections = []
-        # Sort by match order (not by numeric value) - preserve document order
-        major_nums = list(major_sections.keys())
-        
-        # Try to sort numerically if all keys are numeric, otherwise preserve order
-        try:
-            major_nums = sorted(major_nums, key=lambda x: int(x))
-        except ValueError:
-            # Keys are not numeric (e.g., Roman numerals), keep original order
-            major_nums = sorted(major_nums, key=lambda x: major_sections[x]['first_match_idx'])
+        # Sort by document order (preserve appearance order, not numeric value)
+        major_nums = sorted(major_sections.keys(), key=lambda x: major_sections[x]['first_match_idx'])
         
         for idx, major_num in enumerate(major_nums):
             sec = major_sections[major_num]
