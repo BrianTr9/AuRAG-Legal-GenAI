@@ -84,7 +84,8 @@ class HierarchicalChunker:
     SECTION_PATTERNS = [
     # 1. KEYWORD FORMATS (Specific keyword -> Safe to put first)
     # Matches: ARTICLE I - Title, Part 1: Title...
-    (r'(?:ARTICLE|Article|PART|Part)\s+([IVX]+|\d+)\s*(?:[-:.]\s*|\s+)([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\n|$)', 'Keyword (Article/Part) Format'),
+    # Allow optional same-line title (may be redacted) so headers like "ARTICLE I." match
+    (r'(?:ARTICLE|Article|PART|Part)\s+([IVX]+|\d+)\s*(?:[-:.]\s*|\s+)(?:\*+(?:\s+\*+)*\s*)?([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)?(?=\n|$)', 'Keyword (Article/Part) Format'),
 
     # 2. NESTED DECIMALS (Must be before Bare Decimals to avoid partial match)
     # Matches: 1.1, 1.1.1, 2.1.3...
@@ -201,7 +202,9 @@ class HierarchicalChunker:
         
         for i, match in enumerate(matches):
             section_num = match.group(1)
-            section_title = match.group(2).strip()
+            # Title may be optional in some headers (e.g., "ARTICLE I." on its own line)
+            # Safe fallback to empty string if group(2) is missing
+            section_title = (match.group(2) or "").strip()
             
             # Get major section number (first digit before dot)
             if '.' in section_num:
