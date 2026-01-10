@@ -75,7 +75,7 @@ class HierarchicalChunker:
     5. Context window: 8K tokens fits 1-2 parents + 4-5 children
     """
     
-    # Section detection patterns (priority order: ARTICLE variants → bare Roman/decimal variants)
+    # Section detection patterns (priority order: ARTICLE/Part/Section variants → bare Roman/decimal)
     # Focuses on formal headings with explicit separators (-, :, .) or space
     # TOC EXCLUSION: Excludes TOC entries with pattern "3+ dots + optional spaces + digits"
     # Strategy: Use negative lookahead (?!.*\.{3,}\s*\d+$) to prevent matching TOC entries
@@ -85,7 +85,7 @@ class HierarchicalChunker:
     # 1. KEYWORD FORMATS (Specific keyword -> Safe to put first)
     # Matches: ARTICLE I - Title, Part 1: Title...
     # Allow optional same-line title (may be redacted) so headers like "ARTICLE I." match
-    (r'(?:ARTICLE|Article|PART|Part)\s+([IVX]+|\d+)\s*(?:[-:.]\s*|\s+)(?:\*+(?:\s+\*+)*\s*)?([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)?(?=\n|$)', 'Keyword (Article/Part) Format'),
+    (r'(?:ARTICLE|Article|PART|Part|SECTION|Section)\s+([IVX]+|\d+)\s*(?:[-:.]\s*|\s+)(?:\*+(?:\s+\*+)*\s*)?([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)?(?=\n|$)', 'Keyword (Article/Part/Section) Format'),
 
     # 2. NESTED DECIMALS (Must be before Bare Decimals to avoid partial match)
     # Matches: 1.1, 1.1.1, 2.1.3...
@@ -95,10 +95,14 @@ class HierarchicalChunker:
     # Matches: I, II, IV...
     (r'^([IVX]+)\s*(?:[-:.]\s*|\s+)([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\n|$)', 'Bare Roman Format'),
 
-    # 4. BARE DECIMALS (Most general -> Put last)
+    # 4. BARE DECIMALS (Most general)
     # Matches: 1, 2, 10...
     (r'^(\d+)\s*(?:[-:.]\s*|\s+)([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\n|$)', 'Bare Digit Format'),
-    ]
+    
+    # 5. BARE SINGLE LETTER
+    # Matches: A, B, C ... (treated like top-level section markers)
+    (r'^([A-Z])\s*(?:[-:.]\s*|\s+)([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\n|$)', 'Bare Letter Format'),
+]
     
     # Separator hierarchy (paragraph → sentence → line → clause → word)
     SEPARATORS = [
