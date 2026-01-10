@@ -82,73 +82,21 @@ class HierarchicalChunker:
     # E.g., "1. DEFINITIONS" matches, but "1. DEFINITIONS ..................... 1" does NOT
     # But allows ellipsis in headers like "1. TITLE ... SOMETHING" (dots not followed by number)
     SECTION_PATTERNS = [
-        # ===== ARTICLE PATTERNS (uppercase ARTICLE) - TOC-aware =====
-        # Roman numeral variants (with 4 separators: space, dash, colon, period)
-        (r'ARTICLE\s+([IVX]+)\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'ARTICLE Roman space'),
-        (r'ARTICLE\s+([IVX]+)\s*-\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'ARTICLE Roman dash'),
-        (r'ARTICLE\s+([IVX]+)\s*:\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'ARTICLE Roman colon'),
-        (r'ARTICLE\s+([IVX]+)\s*\.\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'ARTICLE Roman period'),
-        
-        # Decimal variants (with 4 separators)
-        (r'ARTICLE\s+(\d+)\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'ARTICLE decimal space'),
-        (r'ARTICLE\s+(\d+)\s*-\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'ARTICLE decimal dash'),
-        (r'ARTICLE\s+(\d+)\s*:\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'ARTICLE decimal colon'),
-        (r'ARTICLE\s+(\d+)\s*\.\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'ARTICLE decimal period'),
-        
-        # ===== ARTICLE PATTERNS (mixed case Article) - TOC-aware =====
-        # Roman numeral variants
-        (r'Article\s+([IVX]+)\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'Article Roman space'),
-        (r'Article\s+([IVX]+)\s*-\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'Article Roman dash'),
-        (r'Article\s+([IVX]+)\s*:\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'Article Roman colon'),
-        (r'Article\s+([IVX]+)\s*\.\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'Article Roman period'),
-        
-        # Decimal variants
-        (r'Article\s+(\d+)\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'Article decimal space'),
-        (r'Article\s+(\d+)\s*-\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'Article decimal dash'),
-        (r'Article\s+(\d+)\s*:\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'Article decimal colon'),
-        (r'Article\s+(\d+)\s*\.\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'Article decimal period'),
-        
-        # ===== PART PATTERNS (uppercase PART) - TOC-aware =====
-        # Roman numeral variants
-        (r'PART\s+([IVX]+)\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'PART Roman space'),
-        (r'PART\s+([IVX]+)\s*-\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'PART Roman dash'),
-        (r'PART\s+([IVX]+)\s*:\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'PART Roman colon'),
-        (r'PART\s+([IVX]+)\s*\.\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'PART Roman period'),
-        
-        # Decimal variants
-        (r'PART\s+(\d+)\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'PART decimal space'),
-        (r'PART\s+(\d+)\s*-\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'PART decimal dash'),
-        (r'PART\s+(\d+)\s*:\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'PART decimal colon'),
-        (r'PART\s+(\d+)\s*\.\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'PART decimal period'),
-        
-        # ===== PART PATTERNS (mixed case Part) - TOC-aware =====
-        # Roman numeral variants
-        (r'Part\s+([IVX]+)\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'Part Roman space'),
-        (r'Part\s+([IVX]+)\s*-\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'Part Roman dash'),
-        (r'Part\s+([IVX]+)\s*:\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'Part Roman colon'),
-        (r'Part\s+([IVX]+)\s*\.\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'Part Roman period'),
-        
-        # Decimal variants
-        (r'Part\s+(\d+)\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'Part decimal space'),
-        (r'Part\s+(\d+)\s*-\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'Part decimal dash'),
-        (r'Part\s+(\d+)\s*:\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'Part decimal colon'),
-        (r'Part\s+(\d+)\s*\.\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\s*(?:\n|$))', 'Part decimal period'),
-        
-        # ===== BARE ROMAN NUMERALS - TOC-aware =====
-        (r'^([IVX]+)\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)$', 'Bare Roman space'),
-        (r'^([IVX]+)\s*-\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)$', 'Bare Roman dash'),
-        (r'^([IVX]+)\s*:\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)$', 'Bare Roman colon'),
-        (r'^([IVX]+)\s*\.\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)$', 'Bare Roman period'),
-        
-        # ===== BARE DECIMAL - TOC-aware =====
-        (r'^(\d+)\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)$', 'Bare decimal space'),
-        (r'^(\d+)\s*-\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)$', 'Bare decimal dash'),
-        (r'^(\d+)\s*:\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)$', 'Bare decimal colon'),
-        (r'^(\d+)\s*\.\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)$', 'Bare decimal period'),
-        
-        # ===== NESTED DECIMALS (1.1, 1.1.1, etc.) - TOC-aware =====
-        (r'^(\d+(?:\.\d+){1,2})\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)$', 'Nested decimal space'),
-        (r'^(\d+(?:\.\d+){1,2})\s*\.\s+([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)$', 'Nested decimal period'),
+    # 1. KEYWORD FORMATS (Specific keyword -> Safe to put first)
+    # Matches: ARTICLE I - Title, Part 1: Title...
+    (r'(?:ARTICLE|Article|PART|Part)\s+([IVX]+|\d+)\s*(?:[-:.]\s*|\s+)([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\n|$)', 'Keyword (Article/Part) Format'),
+
+    # 2. NESTED DECIMALS (Must be before Bare Decimals to avoid partial match)
+    # Matches: 1.1, 1.1.1, 2.1.3...
+    (r'^(\d+(?:\.\d+)+)\s*(?:[-:.]\s*|\s+)([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\n|$)', 'Nested Decimal Format'),
+
+    # 3. BARE ROMAN NUMERALS
+    # Matches: I, II, IV...
+    (r'^([IVX]+)\s*(?:[-:.]\s*|\s+)([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\n|$)', 'Bare Roman Format'),
+
+    # 4. BARE DECIMALS (Most general -> Put last)
+    # Matches: 1, 2, 10...
+    (r'^(\d+)\s*(?:[-:.]\s*|\s+)([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\n|$)', 'Bare Digit Format'),
     ]
     
     # Separator hierarchy (paragraph → sentence → line → clause → word)
