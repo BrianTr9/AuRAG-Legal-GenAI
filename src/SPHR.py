@@ -156,9 +156,12 @@ class HierarchicalChunker:
         ('\n\n', 'paragraph'),
         ('.\n', 'sentence_line'),
         ('. ', 'sentence'),
+        ('.', 'sentence'),
         ('\n', 'line'),
-        ('; ', 'semicolon'),
-        (', ', 'comma'),
+        ('; ', 'semicolon_space'),
+        (';', 'semicolon'),  
+        (', ', 'comma_space'),
+        (',', 'comma'), 
         (' ', 'word'),
     ]
     
@@ -433,37 +436,29 @@ class HierarchicalChunker:
         best_priority = -1
         
         for priority, (sep, _) in enumerate(boundary_separators):
-            # Find all occurrences of this separator
-            positions = []
-            offset = 0
-            while True:
-                pos = search_text.find(sep, offset)
-                if pos == -1:
-                    break
-                # Position after separator
-                positions.append(pos + len(sep))
-                offset = pos + 1
+            # Find separator by checking each token position directly
+            # Avoids encode/decode mismatch by decoding from token list
+            best_sep_pos = None
+            best_sep_distance = float('inf')
             
-            if not positions:
+            for token_pos in range(start_search, end_search):
+                # Decode tokens from BEGINNING to current position
+                # (not from start_search - that loses context)
+                decoded = self.tokenizer.decode(tokens[:token_pos])
+                
+                # Check if decoded text ends with this separator
+                if decoded.endswith(sep):
+                    distance = abs(token_pos - target_pos)
+                    if distance < best_sep_distance:
+                        best_sep_distance = distance
+                        best_sep_pos = token_pos
+            
+            if best_sep_pos is None:
                 continue
             
-            # Find closest to middle of search window
-            middle_offset = len(search_text) // 2
-            closest_pos = min(positions, key=lambda p: abs(p - middle_offset))
-            
-            # Convert text position to token position
-            # Decode from start to this position to count tokens
-            text_before = search_text[:closest_pos]
-            tokens_before = self.tokenizer.encode(text_before)
-            boundary_token_pos = start_search + len(tokens_before)
-            
-            # VALIDATE: Check if boundary is within tolerance range ✓
-            if not (start_search <= boundary_token_pos <= end_search):
-                continue  # Skip boundaries outside tolerance window
-            
-            # Check if this is better than previous
+            # Check if this separator is better than previous (higher priority)
             if best_boundary is None or priority < best_priority:
-                best_boundary = boundary_token_pos
+                best_boundary = best_sep_pos
                 best_priority = priority
                 
                 # If we found paragraph break, that's best possible
