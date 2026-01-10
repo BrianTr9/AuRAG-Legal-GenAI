@@ -273,7 +273,24 @@ class HierarchicalChunker:
                 'char_end': end_pos - trailing_ws,
                 'token_count': self.count_tokens(stripped_text)
             })
-        
+
+        # If there is any content before the first detected section header,
+        # keep it as a separate preamble parent (section '0') so we don't drop
+        # titles/intros/cover text that appears before the first header.
+        if result_sections:
+            first_start = result_sections[0]['char_start']
+            if first_start > 0:
+                pre_text = contract_text[0:first_start].strip()
+                if pre_text:
+                    result_sections.insert(0, {
+                        'section_num': '0',
+                        'title': 'Preamble',
+                        'text': pre_text,
+                        'char_start': 0,
+                        'char_end': first_start,
+                        'token_count': self.count_tokens(pre_text)
+                    })
+
         return result_sections
     
     @staticmethod
