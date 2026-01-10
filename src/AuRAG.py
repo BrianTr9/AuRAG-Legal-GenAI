@@ -46,7 +46,7 @@ OLLAMA_BASE_URL = "http://localhost:11434"  # Default Ollama server
 # Layer 1: Hierarchical Chunking Configuration
 CHILD_CHUNK_SIZE = 300      # Tokens per child chunk
 CHILD_CHUNK_OVERLAP = 90    # Token overlap between children
-TOP_K = 4                    # Top-k children to retrieve
+TOP_K = 8                    # Top-k children to retrieve
 
 # M3 Pro Optimization
 USE_METAL_GPU = True  # Metal acceleration for M3
