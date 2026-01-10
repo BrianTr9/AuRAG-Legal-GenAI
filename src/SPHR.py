@@ -123,7 +123,10 @@ class HierarchicalChunker:
         child_size: int = 300,
         child_overlap: int = 90,
         encoding_name: str = "cl100k_base",
-        semantic_boundary_tolerance: int = 30
+        semantic_boundary_tolerance: int = 30,
+        parent_max_tokens: int = 3000,
+        parent_overlap_ratio: float = 0.1,
+        parent_split_tolerance: int = 1000
     ):
         """
         Initialize chunker with validation
@@ -139,6 +142,14 @@ class HierarchicalChunker:
         self.child_size = child_size
         self.child_overlap = child_overlap
         self.semantic_boundary_tolerance = semantic_boundary_tolerance
+        # Maximum tokens allowed per parent chunk before splitting
+        self.parent_max_tokens = parent_max_tokens
+        # Parent overlap (in tokens) when splitting parent into parts
+        # If ratio provided, compute tokens from ratio of parent_max_tokens
+        self.parent_overlap_ratio = parent_overlap_ratio
+        self.parent_overlap_tokens = max(0, int(self.parent_max_tokens * self.parent_overlap_ratio))
+        # Tolerance (in tokens) when searching for semantic boundary for parent splits
+        self.parent_split_tolerance = parent_split_tolerance
         self.tokenizer = tiktoken.get_encoding(encoding_name)
     
     def _validate_config(self, child_size: int, child_overlap: int, semantic_boundary_tolerance: int):
@@ -284,6 +295,80 @@ class HierarchicalChunker:
     def create_parent_chunks(self, sections: List[Dict], contract_id: str = "contract") -> List[Chunk]:
         """Create parent chunks from sections (one chunk per section)"""
         return [self._section_to_parent_chunk(sec, contract_id) for sec in sections]
+
+    def _split_oversized_parents(self, parents: List[Chunk], contract_id: str) -> List[Chunk]:
+        """
+        Split parent chunks that exceed `parent_max_tokens + semantic_boundary_tolerance`.
+
+        Returns a new list of parents where oversized parents are replaced by smaller parent parts.
+        """
+        new_parents = []
+        for parent in parents:
+            threshold = self.parent_max_tokens + self.parent_split_tolerance
+            if parent.token_count <= threshold:
+                new_parents.append(parent)
+                continue
+
+            # Tokenize parent text and build token->char mapping
+            parent_tokens = self.tokenizer.encode(parent.text)
+            token_to_char = {}
+            for pos in range(len(parent_tokens) + 1):
+                token_to_char[pos] = len(self.tokenizer.decode(parent_tokens[:pos]))
+
+            tokens_len = len(parent_tokens)
+            step = max(1, self.parent_max_tokens - self.parent_overlap_tokens)
+
+            part_idx = 0
+            start = 0
+            while start < tokens_len:
+                target_end = min(start + self.parent_max_tokens, tokens_len)
+
+                # If not at doc end, find semantic boundary near target_end using parent_split_tolerance
+                if target_end < tokens_len:
+                    actual_end = self.find_semantic_boundary(
+                        parent_tokens,
+                        target_end,
+                        tolerance=self.parent_split_tolerance
+                    )
+                    # Prevent zero-length or backwards moves
+                    if actual_end <= start:
+                        actual_end = target_end
+                else:
+                    actual_end = target_end
+
+                # Extract token slice and compute char offsets
+                chunk_tokens = parent_tokens[start:actual_end]
+                chunk_text = self.tokenizer.decode(chunk_tokens).strip()
+                token_count = len(chunk_tokens)
+
+                char_start_in_parent = token_to_char[start]
+                char_end_in_parent = token_to_char[actual_end]
+                char_start = parent.char_start + char_start_in_parent
+                char_end = parent.char_start + char_end_in_parent
+
+                part_idx += 1
+                new_chunk_id = f"{contract_id}_parent_{parent.section_num}_part_{part_idx}"
+
+                new_parent = Chunk(
+                    text=chunk_text,
+                    chunk_id=new_chunk_id,
+                    chunk_type="parent",
+                    parent_id=None,
+                    section_num=f"{parent.section_num}_part_{part_idx}",
+                    section_title=parent.section_title,
+                    token_count=token_count,
+                    char_start=char_start,
+                    char_end=char_end,
+                    contract_id=parent.contract_id
+                )
+                new_parents.append(new_parent)
+
+                # Advance start with overlap
+                if actual_end >= tokens_len:
+                    break
+                start = max(0, actual_end - self.parent_overlap_tokens)
+
+        return new_parents
     
     def split_by_separators(self, text: str, target_size: int) -> List[str]:
         """
@@ -535,7 +620,11 @@ class HierarchicalChunker:
         
         # Step 2: Create parent chunks (full sections)
         parents = self.create_parent_chunks(sections, contract_id)
-        print(f"👨 Created {len(parents)} parent chunks")
+        print(f"👨 Created {len(parents)} parent chunks (before splitting)")
+
+        # Step 2b: Split oversized parents into smaller parent parts if needed
+        parents = self._split_oversized_parents(parents, contract_id)
+        print(f"👨 Created {len(parents)} parent chunks (after splitting)")
         
         # Step 3: Create child chunks with overlap
         all_children = []
