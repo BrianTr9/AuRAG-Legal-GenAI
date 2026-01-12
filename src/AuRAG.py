@@ -118,9 +118,28 @@ chunker = HierarchicalChunker(
 all_parent_chunks = []
 all_child_chunks = []
 
-for idx, doc in enumerate(docs):
-    contract_text = doc.page_content
-    contract_id = f"doc_{idx}_{doc.metadata.get('source', 'unknown').split('/')[-1]}"
+# Group documents by source to handle multi-page PDFs correctly
+grouped_docs = {}
+for doc in docs:
+    source = doc.metadata.get('source', 'unknown')
+    if source not in grouped_docs:
+        grouped_docs[source] = []
+    grouped_docs[source].append(doc)
+
+# Process each source file as one unique contract
+sorted_sources = sorted(grouped_docs.keys())
+
+for idx, source in enumerate(sorted_sources):
+    source_docs = grouped_docs[source]
+    # Sort pages by page number if available (for PDFs)
+    source_docs.sort(key=lambda d: d.metadata.get('page', 0))
+    
+    # Combine all pages into full contract text
+    contract_text = "\n\n".join([d.page_content for d in source_docs])
+    
+    # Generate ID from filename
+    filename = source.split('/')[-1]
+    contract_id = f"doc_{idx}_{filename}"
     
     # Apply hierarchical chunking
     parents, children = chunker.chunk_contract(contract_text, contract_id)
