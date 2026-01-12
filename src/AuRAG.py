@@ -23,10 +23,8 @@ from langchain_community.document_loaders import PyPDFLoader, DirectoryLoader, T
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 from langchain_ollama import OllamaLLM
-from langchain_core.callbacks import StreamingStdOutCallbackHandler, CallbackManager
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
-from langchain_core.runnables import RunnablePassthrough, RunnableParallel
 from langchain_core.output_parsers import StrOutputParser
 
 # Import Layer 1 implementation
@@ -230,10 +228,6 @@ template = (
     "Question: {question}\n"
     "Answer:"
 )
-prompt = PromptTemplate.from_template(template)
-
-# Create QA chain
-qa_chain_base = prompt | llm | StrOutputParser()
 
 def _build_sources(docs) -> List[Dict]:
     """Extract unique source documents from retrieval results"""
