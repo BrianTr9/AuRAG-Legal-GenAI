@@ -6,12 +6,12 @@ General hierarchical chunking with semantic boundary detection.
 Supports structured documents (contracts, legal docs, technical specs).
 
 Strategy:
-- Parent: Full sections (no size limit, typically 1500-3000 tokens)
+- Parent: Full sections (typically 1500-3000 tokens, split if too large)
 - Child: ~300 tokens with 90-token overlap (30%)
 - Semantic boundaries: \n\n → . → \n → ; → , (preserves paragraphs/sentences)
 - Metadata: Child → Parent mapping for retrieval expansion
 
-Author: AuRAG Team
+Author: Trung Bao (Brian) Truong
 Date: January 2026
 """
 
@@ -72,7 +72,7 @@ class HierarchicalChunker:
     2. Children = Small chunks (~300 tokens, precise retrieval)
     3. Semantic boundaries (paragraph/sentence/clause aware)
     4. Retrieval: Search children → expand to parents
-    5. Context window: 8K tokens fits 1-2 parents + 4-5 children
+    5. Metadata-rich chunks for auditing and analysis
     """
     
     # Section detection patterns (priority order: ARTICLE/Part/Section variants → bare Roman/decimal)
@@ -712,85 +712,9 @@ class HierarchicalChunker:
         return parent_to_children
 
 
-# ==================== DEMO ====================
-
-def demo():
-    """Demonstration of hierarchical chunking"""
-    
-    # Load sample CUAD contract
-    contract_path = Path("LegalBench-RAG/corpus/cuad/ABILITYINC_06_15_2020-EX-4.25-SERVICES AGREEMENT.txt")
-    
-    if not contract_path.exists():
-        print(f"❌ Contract not found: {contract_path}")
-        print("📁 Current directory:", Path.cwd())
-        return
-    
-    with open(contract_path, 'r', encoding='utf-8') as f:
-        contract_text = f.read()
-    
-    print("="*60)
-    print("🎯 AuRAG Layer 1: Hierarchical Chunking Demo")
-    print("="*60)
-    print(f"\n📄 Contract: {contract_path.name}")
-    print(f"📏 Size: {len(contract_text):,} characters")
-    
-    # Create chunker
-    chunker = HierarchicalChunker(
-        child_size=300,
-        child_overlap=90  # 30% overlap
-    )
-    
-    # Chunk the contract
-    parents, children = chunker.chunk_contract(
-        contract_text,
-        contract_id=contract_path.stem
-    )
-    
-    # Build parent-child mapping
-    parent_to_children = HierarchicalChunker.build_parent_child_mapping(parents, children)
-    print(f"\n✓ Created {len(parent_to_children)} parent-child mappings")
-    
-    # Display samples
-    print("\n" + "="*60)
-    print("📋 Sample Parent Chunk")
-    print("="*60)
-    
-    if parents:
-        sample_parent = parents[0]
-        print(f"ID: {sample_parent.chunk_id}")
-        print(f"Section: {sample_parent.section_num} - {sample_parent.section_title}")
-        print(f"Tokens: {sample_parent.token_count}")
-        print(f"\nText preview (first 400 chars):")
-        print("-" * 60)
-        print(sample_parent.text[:400])
-        print("...")
-        
-        # Show children of this parent
-        parent_children = [c for c in children if c.parent_id == sample_parent.chunk_id]
-        
-        print("\n" + "="*60)
-        print(f"📋 Child Chunks from Parent '{sample_parent.chunk_id}' ({len(parent_children)} total)")
-        print("="*60)
-        
-        for i, child in enumerate(parent_children[:3]):  # Show first 3
-            print(f"\n[Child {i+1}]")
-            print(f"  ID: {child.chunk_id}")
-            print(f"  Parent: {child.parent_id}")
-            print(f"  Tokens: {child.token_count}")
-            print(f"  Text: {child.text[:200]}...")
-    
-    # Save to JSON
-    output_path = "cuad_chunks_output.json"
-    chunker.save_chunks(parents, children, output_path)
-    
-    print("\n" + "="*60)
-    print("✅ Demo Complete!")
-    print("="*60)
-    print(f"\n🎯 Next steps:")
-    print(f"  1. Index children in vector DB (Qdrant/ChromaDB)")
-    print(f"  2. Store parent_id in metadata")
-    print(f"  3. Retrieve top-K children → deduplicate to parents")
-    print(f"  4. Pass parents to LLM (Gemma-2-9B-It)")
+# Demo utilities were removed from the library module to keep the file
+# focused on core chunking and retrieval classes. Use a separate script
+# for ad-hoc demonstrations or debugging (e.g., tools/demo_sphr.py).
 
 
 # ==========================================
@@ -884,5 +808,4 @@ class HierarchicalRetriever:
         return self.get_relevant_documents(query)
 
 
-if __name__ == "__main__":
-    demo()
+# End of module
