@@ -249,8 +249,18 @@ def _build_sources(docs) -> List[Dict]:
 def answer_with_sources(question: str):
     """Get answer and track source documents for references"""
     docs = hierarchical_retriever.invoke(question)
-    context_str = '\n---\n'.join([d.page_content for d in docs])
-    # Format prompt manually since we override context
+
+    # Build concise enriched context: content + simple reference metadata
+    parts = []
+    for d in docs:
+        content = (d.page_content or '').strip()
+        contract_id = d.metadata.get('contract_id') or d.metadata.get('parent_id', 'unknown')
+        sec_num = d.metadata.get('section_num', 'N/A')
+        sec_title = (d.metadata.get('section_title') or 'Unknown').replace('\n', ' ').strip()
+        ref = f"{contract_id}_Section_{sec_num}_{sec_title}"
+        parts.append(f"context: {content}\nreference: {ref}")
+
+    context_str = '\n---\n'.join(parts)
     formatted = template.format(context=context_str, question=question)
     answer = llm.invoke(formatted).strip()
     return {'answer': answer, 'sources': _build_sources(docs)}

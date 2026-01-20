@@ -795,6 +795,7 @@ class HierarchicalRetriever:
                                 'section_num': parent_chunk.section_num,
                                 'section_title': parent_chunk.section_title,
                                 'token_count': parent_chunk.token_count,
+                                'contract_id': parent_chunk.contract_id,
                             }
                         )
                         expanded_docs.append(parent_doc)
