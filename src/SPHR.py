@@ -106,19 +106,19 @@ class HierarchicalChunker:
     
     # Cross-reference patterns: detect inline mentions of sections (e.g., "Section 1", "Article II")
     # Used in body text to find references to other sections for graph enrichment
-    # Similar to SECTION_PATTERNS but without ^ anchor (match anywhere) and contextual keywords
+    # All patterns use re.IGNORECASE flag in enrich_parent_to_children_with_cross_refs()
+    # Pattern 1 catches all keyword-based references (including contextual like "see Section 1" and positional like "Section 1 above")
+    # Pattern 2 specifically handles parenthetical/bracketed forms which have different structure
     CROSS_REF_PATTERNS = [
-        # 1. Direct section references: "Section 1", "Article II", "Part 2.1", "§3"
-        r'(?:Section|Article|Part|§)\s+([IVX]+|\d+(?:\.\d+)*)',
+        # 1. Keyword-based references: "Section 1", "Article II", "Part 2.1", "subsection 1.2", "clause 3", "§3"
+        # Also matches: "see Section 1", "refer to Article II", "Section 1 above", "as described in Part 2"
+        # Matches: Section/Article/Part/Subsection/Clause/Paragraph + section number
+        # Also matches abbreviations: Sec./Art./Para. (with dot) and symbols: §/¶ (with or without space)
+        r'(?:section|article|part|subsection|clause|paragraph|sec\.|art\.|para\.)\s+([IVX]+|\d+(?:\.\d+)*)|(?:§|¶)\s*([IVX]+|\d+(?:\.\d+)*)',
         
-        # 2. Contextual references: "see Section 1", "refer to Article II", "reference Section 2"
-        r'(?:See|see|Refer to|refer to|Reference|reference|Per|per|As described in|as described in|As stated in|as stated in|Per the|per the)\s+(?:Section|Article|Part)\s+([IVX]+|\d+(?:\.\d+)*)',
-        
-        # 3. Positional references: "1 above", "1.2 below", "1 above-named"
-        r'([IVX]+|\d+(?:\.\d+)*)\s+(?:above|below|above-?named|below-?named)',
-        
-        # 4. Abbreviated references: "Art. I", "Sec. 1", "§1", "Art I" (without dot)
-        r'(?:Art\.?|Sec\.?|Section|Article)\s+([IVX]+|\d+(?:\.\d+)*)',
+        # 2. Parenthetical/bracketed references: "(Section 1)", "[Article II]", "(see §3)"
+        # Matches: references enclosed in parentheses or brackets (symbols §/¶ with or without space)
+        r'[\(\[](?:see\s+)?(?:section|article|part)\s+([IVX]+|\d+(?:\.\d+)*)[\)\]]|[\(\[](?:see\s+)?(?:§|¶)\s*([IVX]+|\d+(?:\.\d+)*)[\)\]]',
     ]
     
     # Separator hierarchy (paragraph → sentence → line → clause → word)
@@ -770,8 +770,13 @@ class HierarchicalChunker:
                 # Find all matches of this pattern in child text (case-insensitive)
                 matches = re.finditer(pattern, child.text, re.IGNORECASE)
                 for match in matches:
-                    # Extract section number from match group(1)
-                    sec_num = match.group(1)
+                    # Extract section number from match groups (may have multiple groups due to alternation)
+                    # Try all groups, use first non-None value
+                    sec_num = None
+                    for group_idx in range(1, len(match.groups()) + 1):
+                        if match.group(group_idx):
+                            sec_num = match.group(group_idx)
+                            break
                     if sec_num:
                         referenced_section_nums.add(sec_num)
             
