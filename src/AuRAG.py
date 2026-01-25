@@ -151,6 +151,13 @@ parent_to_children = HierarchicalChunker.build_parent_child_mapping(
     all_child_chunks
 )
 
+# Enrich mapping with cross-references (lightweight graph for internal references)
+parent_to_children = chunker.enrich_parent_to_children_with_cross_refs(
+    parent_to_children,
+    all_parent_chunks,
+    all_child_chunks
+)
+
 print(f"✓ Chunked {len(all_parent_chunks)} parents + {len(all_child_chunks)} children")
 
 # Save chunk metadata for auditing

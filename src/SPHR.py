@@ -104,6 +104,23 @@ class HierarchicalChunker:
     (r'^([A-Z])\s*(?:[-:.]\s*|\s+)([A-Z](?:(?!\.{3,}\s*\d)[^\n])*?)(?=\n|$)', 'Bare Letter Format'),
 ]
     
+    # Cross-reference patterns: detect inline mentions of sections (e.g., "Section 1", "Article II")
+    # Used in body text to find references to other sections for graph enrichment
+    # Similar to SECTION_PATTERNS but without ^ anchor (match anywhere) and contextual keywords
+    CROSS_REF_PATTERNS = [
+        # 1. Direct section references: "Section 1", "Article II", "Part 2.1", "§3"
+        r'(?:Section|Article|Part|§)\s+([IVX]+|\d+(?:\.\d+)*)',
+        
+        # 2. Contextual references: "see Section 1", "refer to Article II", "reference Section 2"
+        r'(?:See|see|Refer to|refer to|Reference|reference|Per|per|As described in|as described in|As stated in|as stated in|Per the|per the)\s+(?:Section|Article|Part)\s+([IVX]+|\d+(?:\.\d+)*)',
+        
+        # 3. Positional references: "1 above", "1.2 below", "1 above-named"
+        r'([IVX]+|\d+(?:\.\d+)*)\s+(?:above|below|above-?named|below-?named)',
+        
+        # 4. Abbreviated references: "Art. I", "Sec. 1", "§1", "Art I" (without dot)
+        r'(?:Art\.?|Sec\.?|Section|Article)\s+([IVX]+|\d+(?:\.\d+)*)',
+    ]
+    
     # Separator hierarchy (paragraph → sentence → line → clause → word)
     SEPARATORS = [
         ('\n\n', 'paragraph'),
@@ -709,6 +726,72 @@ class HierarchicalChunker:
                 child.chunk_id for child in children 
                 if child.parent_id == parent.chunk_id
             ]
+        return parent_to_children
+
+    def enrich_parent_to_children_with_cross_refs(
+        self,
+        parent_to_children: Dict[str, List[str]],
+        parents: List['Chunk'],
+        children: List['Chunk']
+    ) -> Dict[str, List[str]]:
+        """
+        Enrich parent_to_children mapping by detecting cross-references in child text.
+        
+        When a child mentions another section (e.g., "See Section 2" inside Section 1),
+        add that child to both parent's children lists, creating a lightweight graph.
+        
+        Uses CROSS_REF_PATTERNS class constant for inline section detection.
+        
+        Args:
+            parent_to_children: Initial parent_id -> [child_ids] mapping
+            parents: List of parent chunks
+            children: List of child chunks
+            
+        Returns:
+            Enriched parent_to_children mapping with cross-reference links
+        """
+        # For each child, detect cross-references and add to related parents
+        for child in children:
+            if not child.text:
+                continue
+            
+            # Build section_num -> parent_id map for THIS child's document only
+            # (to avoid cross-document reference collisions where multiple docs have Section I, II, etc.)
+            section_num_to_parent_id = {}
+            for parent in parents:
+                # Only include parents from the same document as this child
+                if parent.contract_id == child.contract_id:
+                    section_num_to_parent_id[parent.section_num] = parent.chunk_id
+            
+            # Find all section references in child text using class constant patterns
+            referenced_section_nums = set()
+            
+            for pattern in self.CROSS_REF_PATTERNS:
+                # Find all matches of this pattern in child text (case-insensitive)
+                matches = re.finditer(pattern, child.text, re.IGNORECASE)
+                for match in matches:
+                    # Extract section number from match group(1)
+                    sec_num = match.group(1)
+                    if sec_num:
+                        referenced_section_nums.add(sec_num)
+            
+            # Add child to each referenced parent (if it exists and isn't already there)
+            for sec_num in referenced_section_nums:
+                # Handle cases where referenced section may be a subsection
+                # Try exact match first, then try major section (e.g., "1.2" -> "1")
+                parent_id = section_num_to_parent_id.get(sec_num)
+                
+                if not parent_id and '.' in sec_num:
+                    # If subsection reference, try major section
+                    major_sec_num = sec_num.split('.')[0]
+                    parent_id = section_num_to_parent_id.get(major_sec_num)
+                
+                # Add child to this parent if found and not already linked
+                if parent_id and child.chunk_id not in parent_to_children.get(parent_id, []):
+                    if parent_id not in parent_to_children:
+                        parent_to_children[parent_id] = []
+                    parent_to_children[parent_id].append(child.chunk_id)
+        
         return parent_to_children
 
 
