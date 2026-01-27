@@ -75,13 +75,23 @@ class HierarchicalChunker:
     5. Metadata-rich chunks for auditing and analysis
     """
     
-    # Section detection patterns (priority order: ARTICLE/Part/Section variants → bare Roman/decimal)
+    # Section detection patterns (priority order: Japanese statute formats → ARTICLE/Part/Section variants → bare Roman/decimal)
     # Focuses on formal headings with explicit separators (-, :, .) or space
     # TOC EXCLUSION: Excludes TOC entries with pattern "3+ dots + optional spaces + digits"
     # Strategy: Use negative lookahead (?!.*\.{3,}\s*\d+$) to prevent matching TOC entries
     # E.g., "1. DEFINITIONS" matches, but "1. DEFINITIONS ..................... 1" does NOT
     # But allows ellipsis in headers like "1. TITLE ... SOMETHING" (dots not followed by number)
     SECTION_PATTERNS = [
+    # 0. JAPANESE STATUTE ARTICLES (COLIEE/e-Gov style)
+    # Matches (optionally preceded by a caption line):
+    #   （未成年者の法律行為）\n第五条　...
+    #   第三条の二　...
+    #   第３条　... (full-width digits)
+    # Captures:
+    #   section: e.g., "第五条", "第三条の二" (normalized later to "5", "3-2")
+    #   title: optional caption inside （） on the previous line
+    (r'^(?:\uff08(?P<title>[^\uff09\n]+)\uff09\s*\n)?(?P<section>\u7b2c[0-9\uff10-\uff19\u3007\u96f6\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341\u767e\u5343]+\u6761(?:\u306e[0-9\uff10-\uff19\u3007\u96f6\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341\u767e\u5343]+)*)[\u3000 \t]+', 'Japanese Article Format'),
+
     # 1. KEYWORD FORMATS (Specific keyword -> Safe to put first)
     # Matches: ARTICLE I - Title, Part 1: Title...
     # Allow optional same-line title (may be redacted) so headers like "ARTICLE I." match
@@ -119,21 +129,137 @@ class HierarchicalChunker:
         # 2. Parenthetical/bracketed references: "(Section 1)", "[Article II]", "(see §3)"
         # Matches: references enclosed in parentheses or brackets (symbols §/¶ with or without space)
         r'[\(\[](?:see\s+)?(?:section|article|part)\s+([IVX]+|\d+(?:\.\d+)*)[\)\]]|[\(\[](?:see\s+)?(?:§|¶)\s*([IVX]+|\d+(?:\.\d+)*)[\)\]]',
+
+        # 3. Japanese statute article references inside text: "第七条", "第三条の二"
+        # Captures the full identifier so it can be normalized to match section_num (e.g., "第三条の二" -> "3-2").
+        r'(\u7b2c[0-9\uff10-\uff19\u3007\u96f6\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341\u767e\u5343]+\u6761(?:\u306e[0-9\uff10-\uff19\u3007\u96f6\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341\u767e\u5343]+)*)',
     ]
     
     # Separator hierarchy (paragraph → sentence → line → clause → word)
+    # Japanese legal text (e.g., COLIEE civil code) is primarily segmented by:
+    #   - Paragraph breaks: \n\n
+    #   - Sentence terminator: 。 (and full-width variants)
+    #   - Clause separators: 、 ： ；
     SEPARATORS = [
         ('\n\n', 'paragraph'),
+        ('。\n', 'sentence_line_jp'),
+        ('。', 'sentence_jp'),
+        ('．\n', 'sentence_line_fullwidth'),
+        ('． ', 'sentence_fullwidth_space'),
+        ('．', 'sentence_fullwidth'),
         ('.\n', 'sentence_line'),
         ('. ', 'sentence'),
         ('.', 'sentence'),
         ('\n', 'line'),
+        ('； ', 'semicolon_fullwidth_space'),
+        ('；', 'semicolon_fullwidth'),
         ('; ', 'semicolon_space'),
-        (';', 'semicolon'),  
+        (';', 'semicolon'),
+        ('： ', 'colon_fullwidth_space'),
+        ('：', 'colon_fullwidth'),
+        (': ', 'colon_space'),
+        (':', 'colon'),
+        ('、 ', 'comma_jp_space'),
+        ('、', 'comma_jp'),
         (', ', 'comma_space'),
-        (',', 'comma'), 
+        (',', 'comma'),
+        ('\u3000', 'ideographic_space'),
         (' ', 'word'),
     ]
+
+    @staticmethod
+    def _normalize_fullwidth_digits(text: str) -> str:
+        """Convert full-width digits (０-９) to ASCII digits (0-9)."""
+        if not text:
+            return text
+        fw = '０１２３４５６７８９'
+        hw = '0123456789'
+        return text.translate(str.maketrans(fw, hw))
+
+    @staticmethod
+    def _kanji_numeral_to_int(text: str) -> int:
+        """Convert common Japanese kanji numerals to int (supports up to 万)."""
+        if not text:
+            raise ValueError("empty kanji numeral")
+
+        text = HierarchicalChunker._normalize_fullwidth_digits(text)
+        if text.isdigit():
+            return int(text)
+
+        digit_map = {
+            '〇': 0, '零': 0,
+            '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+            '六': 6, '七': 7, '八': 8, '九': 9,
+        }
+        unit_map = {'十': 10, '百': 100, '千': 1000, '万': 10000}
+
+        total = 0
+        section_total = 0
+        current = 0
+
+        for ch in text:
+            if ch in digit_map:
+                current = digit_map[ch]
+                continue
+
+            if ch in unit_map:
+                unit = unit_map[ch]
+                if current == 0:
+                    current = 1
+                if unit == 10000:
+                    section_total = (section_total + current) * unit
+                    total += section_total
+                    section_total = 0
+                else:
+                    section_total += current * unit
+                current = 0
+                continue
+
+            raise ValueError(f"unsupported kanji numeral char: {ch}")
+
+        return total + section_total + current
+
+    @staticmethod
+    def _normalize_japanese_article_identifier(section_raw: str) -> str:
+        """Normalize Japanese article identifiers like '第五条', '第三条の二' -> '5', '3-2'."""
+        if not section_raw:
+            return section_raw
+
+        section_raw = HierarchicalChunker._normalize_fullwidth_digits(section_raw)
+        section_raw = section_raw.strip()
+
+        # Expect patterns like: 第...条 or 第...条の...
+        if not section_raw.startswith('第') or '条' not in section_raw:
+            return section_raw
+
+        base_part = section_raw[1:section_raw.index('条')]
+        suffix_part = section_raw[section_raw.index('条') + 1:]
+
+        def parse_part(part: str) -> str:
+            part = part.strip()
+            if not part:
+                return ''
+            if part.isdigit():
+                return str(int(part))
+            try:
+                return str(HierarchicalChunker._kanji_numeral_to_int(part))
+            except Exception:
+                return part
+
+        base_norm = parse_part(base_part)
+        if not suffix_part:
+            return base_norm
+
+        # suffix like: の二, の２, の十五 ... possibly repeated
+        suffixes = []
+        for piece in suffix_part.split('の'):
+            if not piece:
+                continue
+            suffixes.append(parse_part(piece))
+
+        if suffixes:
+            return base_norm + '-' + '-'.join(suffixes)
+        return base_norm
     
     def __init__(
         self,
@@ -233,10 +359,21 @@ class HierarchicalChunker:
         major_sections = {}
         
         for i, match in enumerate(matches):
-            section_num = match.group(1)
-            # Title may be optional in some headers (e.g., "ARTICLE I." on its own line)
-            # Safe fallback to empty string if group(2) is missing
-            section_title = (match.group(2) or "").strip()
+            groupdict = match.groupdict() if hasattr(match, 'groupdict') else {}
+
+            section_num = (groupdict.get('section') or match.group(1) or '').strip()
+            if section_num.startswith('第') and '条' in section_num:
+                section_num = self._normalize_japanese_article_identifier(section_num)
+
+            # Title may be optional or come from a named group (e.g., Japanese caption line)
+            section_title = (groupdict.get('title') or "").strip()
+            if not section_title:
+                # Fallback to first non-empty captured group after section_num
+                for group_idx in range(2, len(match.groups()) + 1):
+                    val = match.group(group_idx)
+                    if val:
+                        section_title = val.strip()
+                        break
             
             # Get major section number (first digit before dot)
             if '.' in section_num:
@@ -778,6 +915,10 @@ class HierarchicalChunker:
                             sec_num = match.group(group_idx)
                             break
                     if sec_num:
+                        # Normalize Japanese statute identifiers like "第三条の二" -> "3-2"
+                        # so they match parent.section_num values produced by extract_sections().
+                        if isinstance(sec_num, str) and sec_num.startswith('第') and '条' in sec_num:
+                            sec_num = self._normalize_japanese_article_identifier(sec_num)
                         referenced_section_nums.add(sec_num)
             
             # Add child to each referenced parent (if it exists and isn't already there)
@@ -841,6 +982,12 @@ class HierarchicalRetriever:
         self.parent_to_children = parent_to_children
         self.top_k = top_k
         self.context_budget = context_budget
+
+        # Reverse index so a child can expand to multiple parents (cross-ref enrichment).
+        self.child_to_parents = {}
+        for parent_id, child_ids in (parent_to_children or {}).items():
+            for child_id in child_ids or []:
+                self.child_to_parents.setdefault(child_id, []).append(parent_id)
     
     def get_relevant_documents(self, query: str):
         """
@@ -865,30 +1012,43 @@ class HierarchicalRetriever:
         
         # Step 2: Map children to parents and add ONLY parents
         for child_doc in child_docs:
-            parent_id = child_doc.metadata.get('parent_id')
-            
-            if parent_id and parent_id not in seen_parents:
+            child_id = child_doc.metadata.get('chunk_id')
+            direct_parent_id = child_doc.metadata.get('parent_id')
+
+            candidate_parent_ids = []
+            if child_id and child_id in self.child_to_parents:
+                candidate_parent_ids.extend(self.child_to_parents.get(child_id) or [])
+            if direct_parent_id:
+                candidate_parent_ids.append(direct_parent_id)
+
+            # Preserve rank order: expand parents in the order we encounter children.
+            for parent_id in candidate_parent_ids:
+                if not parent_id or parent_id in seen_parents:
+                    continue
+
                 parent_chunk = self.parent_chunks.get(parent_id)
-                if parent_chunk:
-                    parent_tokens = parent_chunk.token_count
-                    
-                    # Only add parent if it doesn't exceed budget
-                    if total_tokens + parent_tokens <= self.context_budget:
-                        from langchain_core.documents import Document
-                        parent_doc = Document(
-                            page_content=parent_chunk.text,
-                            metadata={
-                                'chunk_id': parent_chunk.chunk_id,
-                                'chunk_type': 'parent',
-                                'section_num': parent_chunk.section_num,
-                                'section_title': parent_chunk.section_title,
-                                'token_count': parent_chunk.token_count,
-                                'contract_id': parent_chunk.contract_id,
-                            }
-                        )
-                        expanded_docs.append(parent_doc)
-                        total_tokens += parent_tokens
-                        seen_parents.add(parent_id)
+                if not parent_chunk:
+                    continue
+
+                parent_tokens = parent_chunk.token_count
+
+                # Only add parent if it doesn't exceed budget
+                if total_tokens + parent_tokens <= self.context_budget:
+                    from langchain_core.documents import Document
+                    parent_doc = Document(
+                        page_content=parent_chunk.text,
+                        metadata={
+                            'chunk_id': parent_chunk.chunk_id,
+                            'chunk_type': 'parent',
+                            'section_num': parent_chunk.section_num,
+                            'section_title': parent_chunk.section_title,
+                            'token_count': parent_chunk.token_count,
+                            'contract_id': parent_chunk.contract_id,
+                        }
+                    )
+                    expanded_docs.append(parent_doc)
+                    total_tokens += parent_tokens
+                    seen_parents.add(parent_id)
         
         return expanded_docs
     
