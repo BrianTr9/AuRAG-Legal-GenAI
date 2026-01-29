@@ -1,5 +1,5 @@
-# Minimal Local RAG
-# ==========================
+# AuRAG: Auditable RAG with True GCD
+# ===================================
 
 # LangChain Core
 langchain>=0.1.0
@@ -7,7 +7,8 @@ langchain-community>=0.0.20
 langchain-core>=0.1.0
 langchain-chroma>=0.1.0
 langchain-text-splitters>=0.0.1
-langchain-ollama>=0.1.0
+langchain-huggingface>=0.0.3
+langchain-ollama>=0.1.0  # Fallback mode
 
 # Vector Store
 chromadb>=0.4.0
@@ -15,8 +16,10 @@ chromadb>=0.4.0
 # Document Processing
 pypdf>=3.17.0
 
-# Local LLM (via Ollama)
-# Requirements: ollama pull llama3.1
+# Local LLM - Dual Mode
+# Primary: llama-cpp-python with GGUF (True GCD)
+# Fallback: Ollama (post-hoc validation)
+llama-cpp-python>=0.2.0
 ollama>=0.6.0
 
 # Embeddings
