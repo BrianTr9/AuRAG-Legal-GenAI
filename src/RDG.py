@@ -18,12 +18,14 @@ Date: January 2026
 import os
 import re
 import json
+import sys
+import io
 from typing import List, Dict, Tuple, Optional, Any
 from dataclasses import dataclass, field
 from langchain_core.documents import Document
 
 # ==========================================
-# LLAMA-CPP-PYTHON IMPORT (Primary: True GCD)
+# LLAMA-CPP-PYTHON (Grammar-Constrained Decoding)
 # ==========================================
 
 try:
@@ -92,12 +94,10 @@ class Citation:
         )
     
     def to_short_id(self) -> str:
-        """Generate concise ID for reasoning steps: doc_0_sec_I
+        """Generate concise ID for reasoning steps.
         
-        Extracts the doc_X prefix from contract_id if it contains a filename.
-        Example: 
-          contract_id = "doc_1_FILENAME.txt" -> "doc_1_sec_1"
-          contract_id = "doc_0" -> "doc_0_sec_I"
+        Format: {doc_prefix}_sec_{section_num}
+        Example: "doc_0_sec_I" or "doc_1_sec_2"
         """
         # Extract just the doc_X part (before the first underscore after "doc_")
         if self.contract_id.startswith("doc_"):
@@ -214,31 +214,24 @@ class StructuredOutput:
 
     @staticmethod
     def from_dict(data: Dict) -> 'StructuredOutput':
-        """Create StructuredOutput from dictionary"""
-        citations_raw = data.get("citations", [])
+        """Create StructuredOutput from dictionary."""
         citations = []
         
-        for c in citations_raw:
-            if isinstance(c, dict):
-                if "reference_id" in c:
-                    citations.append(Citation.from_reference_string(c["reference_id"]))
-                elif "contract_id" in c and "section_num" in c and "section_title" in c:
-                    reference_id = f"{c['contract_id']}_Section_{c['section_num']}_{c['section_title']}"
-                    citations.append(Citation.from_reference_string(reference_id))
-            elif isinstance(c, str):
-                try:
+        for c in data.get("citations", []):
+            try:
+                if isinstance(c, dict):
+                    if "reference_id" in c:
+                        citations.append(Citation.from_reference_string(c["reference_id"]))
+                    elif all(k in c for k in ["contract_id", "section_num", "section_title"]):
+                        ref_id = f"{c['contract_id']}_Section_{c['section_num']}_{c['section_title']}"
+                        citations.append(Citation.from_reference_string(ref_id))
+                elif isinstance(c, str):
                     citations.append(Citation.from_reference_string(c))
-                except ValueError:
-                    pass  # Skip invalid citation strings
+            except (ValueError, KeyError):
+                pass  # Skip invalid citations
         
-        # Parse reasoning (handle both structured and string formats)
-        reasoning_data = data.get("reasoning", "")
-        if isinstance(reasoning_data, dict):
-            reasoning = StructuredReasoning.from_dict(reasoning_data)
-        elif isinstance(reasoning_data, str):
-            reasoning = StructuredReasoning.from_dict(reasoning_data)
-        else:
-            reasoning = StructuredReasoning(steps=[])
+        # Parse reasoning (structured or string format)
+        reasoning = _parse_reasoning(data.get("reasoning", ""))
         
         return StructuredOutput(
             citations=citations,
@@ -253,35 +246,31 @@ class StructuredOutput:
 
 class GBNFGrammarBuilder:
     """
-    Builds dynamic GBNF grammars from retrieved citations.
+    Builds dynamic GBNF grammars for citation-constrained generation.
     
-    This is THE MAGIC of Phase 2:
-    - Creates a grammar that ONLY allows valid citation IDs at token level
-    - llama-cpp-python uses this to mask logits during generation
-    - Invalid tokens get logit = -infinity (mathematically impossible)
+    Zero-Hallucination Mechanism:
+    - Grammar constrains LLM to ONLY generate valid citation IDs
+    - Invalid tokens receive logit = -∞ (mathematically impossible)
+    - Provides syntactic guarantee of citation correctness
     """
     
     def build_grammar(self, valid_citations: List[str]) -> str:
-        """
-        Build GBNF grammar string that constrains citations to valid set.
+        """Build GBNF grammar constraining citations to valid set.
         
         Args:
-            valid_citations: List of valid citation strings from retrieval
+            valid_citations: Valid citation IDs from retrieved documents
             
         Returns:
             GBNF grammar string for llama-cpp-python
         """
         if not valid_citations:
-            # No citations available - allow empty array only
             citation_rule = 'citation-list ::= "[]"'
         else:
-            # Build citation enum: each citation is a quoted string option
-            escaped_refs = []
-            for cit in valid_citations:
-                # Escape special characters for GBNF string literals
-                escaped = cit.replace('\\', '\\\\').replace('"', '\\"')
-                escaped_refs.append(f'"\\"" "{escaped}" "\\""')
-            
+            # Escape and format each citation as GBNF string literal
+            escaped_refs = [
+                f'"\\"" "{cit.replace("\\", "\\\\").replace('"', '\\"')}" "\\""'
+                for cit in valid_citations
+            ]
             citation_enum = ' | '.join(escaped_refs)
             citation_rule = f'''
 citation-list ::= "[]" | "[" ws citation (ws "," ws citation)* ws "]"
@@ -520,19 +509,13 @@ class RDGPipeline:
                 "Install with: pip install llama-cpp-python"
             )
         
-        # Find model path
+        # Find and load model
         self.model_path = self._find_model(model_path)
-        
-        # Initialize llama.cpp model (suppress verbose output)
         print(f"\n🔧 Loading GGUF model: {os.path.basename(self.model_path)}")
         
-        import sys
-        import io
-        
-        # Suppress llama.cpp initialization logs
+        # Suppress verbose llama.cpp initialization output
         old_stderr = sys.stderr
         sys.stderr = io.StringIO()
-        
         try:
             self.llm = Llama(
                 model_path=self.model_path,
@@ -545,6 +528,7 @@ class RDGPipeline:
         
         print(f"✓ Model ready (context: {n_ctx} tokens)")
         
+        # Initialize helper components
         self.grammar_builder = GBNFGrammarBuilder()
         self.reference_extractor = ReferenceExtractor()
     
@@ -687,18 +671,16 @@ Note: Use SHORT citation IDs in reasoning steps (e.g., "doc_0_sec_II" instead of
         grammar = None
         if use_grammar:
             try:
-                # Use structured CoT grammar with citation constraints
                 grammar_str = self.grammar_builder.build_structured_cot_grammar(valid_refs)
                 grammar = LlamaGrammar.from_string(grammar_str)
                 print("✓ GBNF grammar compiled (Structured CoT + citation constraints)")
-            except Exception as e:
-                print(f"⚠️ Structured CoT grammar compilation failed: {e}")
-                print("   Falling back to simple grammar (still citation-constrained)")
+            except Exception:
+                # Fallback: simple grammar still citation-constrained
                 try:
                     grammar_str = self.grammar_builder.build_simple_grammar(valid_refs)
                     grammar = LlamaGrammar.from_string(grammar_str)
                     print("   ⚠️  Using simple grammar (CoT fallback)")
-                except:
+                except Exception:
                     grammar = None
                     print("   ⚠️  Grammar compilation failed!")
         
@@ -707,7 +689,7 @@ Note: Use SHORT citation IDs in reasoning steps (e.g., "doc_0_sec_II" instead of
         prompt = self._build_prompt(question, context, valid_refs)
         
         # Step 4: Generate with grammar constraints
-        print(f"🔄 Generating answer (citations: {len(valid_refs)})...", end="", flush=True)
+        print(f"🔄 Generating answer...", end="", flush=True)
         
         output = self.llm(
             prompt,
@@ -733,22 +715,10 @@ Note: Use SHORT citation IDs in reasoning steps (e.g., "doc_0_sec_II" instead of
             )
         
         # Step 6: Validate citations (belt-and-suspenders check)
-        validated_citations = []
-        raw_citations = output_dict.get('citations', [])
-        
-        for cit in raw_citations:
-            cit_str = cit if isinstance(cit, str) else str(cit)
-            # Accept citation if it's in valid_refs or can be parsed
-            if cit_str in valid_refs:
-                try:
-                    validated_citations.append(Citation.from_reference_string(cit_str))
-                except ValueError:
-                    pass
-            else:
-                print(f"   ⚠️ Citation not in valid set: {cit_str}")
-        
-        if len(validated_citations) != len(raw_citations):
-            print(f"   ⚠️  Filtered {len(raw_citations) - len(validated_citations)} invalid citation(s)")
+        validated_citations = self._validate_citations(
+            output_dict.get('citations', []),
+            valid_refs
+        )
         
         # Parse reasoning into StructuredReasoning
         reasoning = _parse_reasoning(output_dict.get('reasoning', ''))
@@ -758,6 +728,37 @@ Note: Use SHORT citation IDs in reasoning steps (e.g., "doc_0_sec_II" instead of
             reasoning=reasoning,
             answer=output_dict.get('answer', '')
         )
+    
+    def _validate_citations(
+        self,
+        raw_citations: List[Any],
+        valid_refs: List[str]
+    ) -> List[Citation]:
+        """Validate and filter citations (belt-and-suspenders check).
+        
+        Args:
+            raw_citations: Raw citation data from LLM output
+            valid_refs: Set of valid reference strings from retrieval
+            
+        Returns:
+            List of validated Citation objects
+        """
+        validated = []
+        
+        for cit in raw_citations:
+            cit_str = str(cit) if not isinstance(cit, str) else cit
+            if cit_str in valid_refs:
+                try:
+                    validated.append(Citation.from_reference_string(cit_str))
+                except ValueError:
+                    pass  # Skip malformed citations
+        
+        # Report filtering if any citations were removed
+        if len(validated) != len(raw_citations):
+            filtered = len(raw_citations) - len(validated)
+            print(f"   ⚠️  Filtered {filtered} invalid citation(s)")
+        
+        return validated
     
     def __call__(
         self, 
