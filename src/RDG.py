@@ -80,15 +80,13 @@ class Citation:
     section_num: str    # Section number: I, 2.1, 0
     section_title: str  # Section title: GENERAL_UNDERTAKING
     contract_id: str    # Contract ID: doc_0
-    confidence: float = 1.0  # Confidence score (0-1)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization (concise format)"""
         return {
             "contract_id": self.contract_id,
             "section_num": self.section_num,
-            "section_title": self.section_title,
-            "confidence": self.confidence
+            "section_title": self.section_title
         }
 
     @staticmethod
@@ -118,21 +116,121 @@ class Citation:
             section_title=section_title,
             contract_id=contract_id
         )
+    
+    def to_short_id(self) -> str:
+        """Generate concise ID for reasoning steps: doc_0_sec_I
+        
+        Extracts the doc_X prefix from contract_id if it contains a filename.
+        Example: 
+          contract_id = "doc_1_FILENAME.txt" -> "doc_1_sec_1"
+          contract_id = "doc_0" -> "doc_0_sec_I"
+        """
+        # Extract just the doc_X part (before the first underscore after "doc_")
+        if self.contract_id.startswith("doc_"):
+            parts = self.contract_id.split("_", 2)  # Split into ["doc", "X", "rest"]
+            if len(parts) >= 2:
+                doc_prefix = f"{parts[0]}_{parts[1]}"  # "doc_X"
+            else:
+                doc_prefix = self.contract_id
+        else:
+            doc_prefix = self.contract_id
+        
+        return f"{doc_prefix}_sec_{self.section_num}"
+    
+    @staticmethod
+    def get_short_id_from_reference(ref: str) -> str:
+        """Extract short ID from full reference string"""
+        try:
+            citation = Citation.from_reference_string(ref)
+            return citation.to_short_id()
+        except:
+            return ref  # Fallback to original if parsing fails
+
+
+@dataclass
+class ReasoningStep:
+    """A single step in the chain of thought"""
+    statement: str
+    citations: List[str] = field(default_factory=list)
+    step_type: str = "inference"  # "premise", "inference", "conclusion"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "statement": self.statement,
+            "citations": self.citations,
+            "type": self.step_type
+        }
+    
+    @staticmethod
+    def from_dict(data: Dict) -> 'ReasoningStep':
+        if not isinstance(data, dict):
+            # Handle invalid input gracefully
+            return ReasoningStep(statement=str(data) if data else "", step_type="inference")
+        return ReasoningStep(
+            statement=data.get("statement", ""),
+            citations=data.get("citations", []),
+            step_type=data.get("type", "inference")
+        )
+
+
+@dataclass
+class StructuredReasoning:
+    """Structured chain-of-thought reasoning"""
+    steps: List[ReasoningStep]
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict with short citation IDs in steps"""
+        steps_dict = []
+        for step in self.steps:
+            step_dict = step.to_dict()
+            # Convert full citation IDs to short IDs for conciseness
+            step_dict["citations"] = [
+                Citation.get_short_id_from_reference(cit) 
+                for cit in step_dict["citations"]
+            ]
+            steps_dict.append(step_dict)
+        return {"steps": steps_dict}
+    
+    @staticmethod
+    def from_dict(data: Dict) -> 'StructuredReasoning':
+        if data is None:
+            return StructuredReasoning(steps=[])
+        if isinstance(data, str):
+            # Backward compatibility: convert free-text to single step
+            return StructuredReasoning(
+                steps=[ReasoningStep(statement=data, step_type="inference")]
+            )
+        if not isinstance(data, dict):
+            # Handle unexpected types gracefully
+            return StructuredReasoning(steps=[])
+        steps_data = data.get("steps", [])
+        if not isinstance(steps_data, list):
+            steps_data = []
+        steps = [ReasoningStep.from_dict(s) for s in steps_data]
+        return StructuredReasoning(steps=steps)
 
 
 @dataclass
 class StructuredOutput:
     """Structured output with citations, reasoning, and answer"""
     citations: List[Citation]
-    reasoning: str
+    reasoning: StructuredReasoning  # Now structured, not free text
     answer: str
     metadata: Dict[str, Any] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization (clean format)"""
+        # Handle both StructuredReasoning and legacy string format
+        if isinstance(self.reasoning, StructuredReasoning):
+            reasoning_dict = self.reasoning.to_dict()
+        elif isinstance(self.reasoning, str):
+            reasoning_dict = self.reasoning  # Legacy string format
+        else:
+            reasoning_dict = {"steps": []}
+        
         result = {
             "citations": [c.to_dict() for c in self.citations],
-            "reasoning": self.reasoning,
+            "reasoning": reasoning_dict,
             "answer": self.answer
         }
         # Only include metadata if it has content
@@ -159,9 +257,18 @@ class StructuredOutput:
                 except ValueError:
                     pass  # Skip invalid citation strings
         
+        # Parse reasoning (handle both structured and string formats)
+        reasoning_data = data.get("reasoning", "")
+        if isinstance(reasoning_data, dict):
+            reasoning = StructuredReasoning.from_dict(reasoning_data)
+        elif isinstance(reasoning_data, str):
+            reasoning = StructuredReasoning.from_dict(reasoning_data)
+        else:
+            reasoning = StructuredReasoning(steps=[])
+        
         return StructuredOutput(
             citations=citations,
-            reasoning=data.get("reasoning", ""),
+            reasoning=reasoning,
             answer=data.get("answer", "")
         )
 
@@ -223,19 +330,96 @@ ws ::= [ \\t\\n]*
 '''
         return grammar.strip()
     
-    def build_simple_grammar(self) -> str:
+    def build_simple_grammar(self, valid_citations: List[str] = None) -> str:
         """
-        Build a simpler grammar for testing (no citation constraints).
-        Useful for debugging when citations cause issues.
+        Build a simpler grammar with citation constraints but flat reasoning.
+        
+        Used as fallback when structured CoT grammar fails.
+        Still maintains zero-hallucination guarantee for citations.
+        
+        Args:
+            valid_citations: List of valid citation strings (if None, allows empty only)
         """
-        grammar = '''
-root ::= "{" ws citations-field ws "," ws reasoning-field ws "," ws answer-field ws "}"
+        if not valid_citations:
+            citation_rule = '"[]"'
+        else:
+            escaped_refs = []
+            for cit in valid_citations:
+                escaped = cit.replace('\\', '\\\\').replace('"', '\\"')
+                escaped_refs.append(f'"\\"" "{escaped}" "\\""')
+            citation_enum = ' | '.join(escaped_refs)
+            citation_rule = f'"[]" | "[" ws citation (ws "," ws citation)* ws "]"\ncitation ::= {citation_enum}'
+        
+        grammar = f'''
+root ::= "{{" ws citations-field ws "," ws reasoning-field ws "," ws answer-field ws "}}"
 
-citations-field ::= "\\"citations\\"" ws ":" ws "[" ws (string (ws "," ws string)*)? ws "]"
+citations-field ::= "\\"citations\\"" ws ":" ws {citation_rule}
+
 reasoning-field ::= "\\"reasoning\\"" ws ":" ws string
 answer-field ::= "\\"answer\\"" ws ":" ws string
 
-string ::= "\\"" [^"]* "\\""
+string ::= "\\"" char* "\\""
+char ::= [^"\\\\] | "\\\\" ["\\\\/bfnrt]
+ws ::= [ \\t\\n]*
+'''
+        return grammar.strip()
+    
+    def build_structured_cot_grammar(self, valid_citations: List[str]) -> str:
+        """
+        Build GBNF grammar for Structured Chain-of-Thought.
+        
+        Enforces reasoning as an array of steps, each with:
+        - statement: string
+        - citations: array of SHORT citation IDs (e.g., "doc_0_sec_I")
+        - type: "premise" | "inference" | "conclusion"
+        
+        Top-level citations use full reference format.
+        Step-level citations use concise short IDs for readability.
+        """
+        if not valid_citations:
+            full_citation_enum = '"\"" "no_citation" "\""'
+            short_citation_enum = '"\"" "no_citation" "\""'
+        else:
+            # Full citation enum for top-level citations
+            escaped_full = []
+            for cit in valid_citations:
+                escaped = cit.replace('\\', '\\\\').replace('"', '\\"')
+                escaped_full.append(f'"\\"" "{escaped}" "\\""')
+            full_citation_enum = ' | '.join(escaped_full)
+            
+            # Short citation enum for step-level citations
+            escaped_short = []
+            for cit in valid_citations:
+                short_id = Citation.get_short_id_from_reference(cit)
+                escaped = short_id.replace('\\', '\\\\').replace('"', '\\"')
+                escaped_short.append(f'"\\"" "{escaped}" "\\""')
+            short_citation_enum = ' | '.join(escaped_short)
+        
+        grammar = f'''
+root ::= "{{" ws citations-field ws "," ws reasoning-field ws "," ws answer-field ws "}}"
+
+citations-field ::= "\\"citations\\"" ws ":" ws full-citation-list
+
+full-citation-list ::= "[]" | "[" ws full-citation (ws "," ws full-citation)* ws "]"
+full-citation ::= {full_citation_enum}
+
+reasoning-field ::= "\\"reasoning\\"" ws ":" ws reasoning-object
+
+reasoning-object ::= "{{" ws "\\"steps\\"" ws ":" ws steps-array ws "}}"
+
+steps-array ::= "[]" | "[" ws reasoning-step (ws "," ws reasoning-step)* ws "]"
+
+reasoning-step ::= "{{" ws "\\"statement\\"" ws ":" ws string ws "," ws "\\"citations\\"" ws ":" ws short-citation-list ws "," ws "\\"type\\"" ws ":" ws step-type ws "}}"
+
+short-citation-list ::= "[]" | "[" ws short-citation (ws "," ws short-citation)* ws "]"
+short-citation ::= {short_citation_enum}
+
+step-type ::= "\\"premise\\"" | "\\"inference\\"" | "\\"conclusion\\""
+
+answer-field ::= "\\"answer\\"" ws ":" ws string
+
+string ::= "\\"" char* "\\""
+char ::= [^"\\\\] | "\\\\" ["\\\\\\\\bfnrt]
 ws ::= [ \\t\\n]*
 '''
         return grammar.strip()
@@ -307,6 +491,19 @@ def _parse_json_output(raw_text: str) -> Optional[Dict[str, Any]]:
         return json.loads(raw_text)
     except json.JSONDecodeError:
         return None
+
+
+def _parse_reasoning(reasoning_data: Any) -> StructuredReasoning:
+    """Parse reasoning data into StructuredReasoning object.
+    
+    Handles dict, string, and None inputs gracefully.
+    """
+    if isinstance(reasoning_data, dict):
+        return StructuredReasoning.from_dict(reasoning_data)
+    elif isinstance(reasoning_data, str):
+        return StructuredReasoning.from_dict(reasoning_data)
+    else:
+        return StructuredReasoning(steps=[])
 
 
 # ==========================================
@@ -390,7 +587,7 @@ class RDGPipeline:
             f"Please download a GGUF model and place it in the models/ directory."
         )
     
-    def _build_context(self, documents: List[Document], valid_refs: List[str]) -> str:
+    def _build_context(self, documents: List[Document]) -> str:
         """Build context string from documents with reference IDs"""
         context_parts = []
         
@@ -434,9 +631,27 @@ VALID_CITATIONS (use EXACTLY these IDs, no others):
 QUESTION: {question}
 
 Respond with a JSON object containing:
-- "citations": list of citation IDs you used (from VALID_CITATIONS only)
-- "reasoning": your step-by-step analysis
+- "citations": list of ALL citation IDs you reference (from VALID_CITATIONS only)
+- "reasoning": structured chain-of-thought with:
+  - "steps": array of reasoning steps, each with:
+    * "statement": the reasoning statement
+    * "citations": citation IDs supporting this step
+    * "type": "premise" (fact from context), "inference" (logical deduction), or "conclusion" (final reasoning)
 - "answer": your final answer
+
+Example format:
+{{
+  "citations": ["doc_0_Section_II_TITLE"],
+  "reasoning": {{
+    "steps": [
+      {{"statement": "Contract requires notice", "citations": ["doc_0_sec_II"], "type": "premise"}},
+      {{"statement": "Therefore notice is mandatory", "citations": [], "type": "conclusion"}}
+    ]
+  }},
+  "answer": "Notice is required"
+}}
+
+Note: Use SHORT citation IDs in reasoning steps (e.g., "doc_0_sec_II" instead of full reference)
 
 <|eot_id|><|start_header_id|>assistant<|end_header_id|>
 
@@ -475,7 +690,12 @@ Respond with a JSON object containing:
             print("⚠️ No valid citations found in documents")
             return StructuredOutput(
                 citations=[],
-                reasoning="No valid citations found in retrieved documents.",
+                reasoning=StructuredReasoning(steps=[
+                    ReasoningStep(
+                        statement="No valid citations found in retrieved documents.",
+                        step_type="conclusion"
+                    )
+                ]),
                 answer="Unable to answer - no relevant context available."
             )
         
@@ -483,20 +703,23 @@ Respond with a JSON object containing:
         grammar = None
         if use_grammar:
             try:
-                # Use simple grammar (no citation enum) for reliable JSON structure
-                # Citation validation is done post-generation (belt-and-suspenders)
-                # Note: Full citation constraints via build_grammar(valid_refs) can cause
-                # grammar compilation issues with complex citation strings
-                grammar_str = self.grammar_builder.build_simple_grammar()
+                # Use structured CoT grammar with citation constraints
+                grammar_str = self.grammar_builder.build_structured_cot_grammar(valid_refs)
                 grammar = LlamaGrammar.from_string(grammar_str)
-                print("✓ GBNF grammar compiled (JSON structure constrained)")
+                print("✓ GBNF grammar compiled (Structured CoT + citation constraints)")
             except Exception as e:
-                print(f"⚠️ Grammar compilation failed: {e}")
-                print("   Falling back to unconstrained generation")
-                grammar = None
+                print(f"⚠️ Structured CoT grammar compilation failed: {e}")
+                print("   Falling back to simple grammar (still citation-constrained)")
+                try:
+                    grammar_str = self.grammar_builder.build_simple_grammar(valid_refs)
+                    grammar = LlamaGrammar.from_string(grammar_str)
+                    print("✓ Simple grammar compiled (citation-constrained fallback)")
+                except:
+                    grammar = None
+                    print("⚠️ All grammar compilation failed - no constraint active!")
         
         # Step 3: Build context and prompt
-        context = self._build_context(documents, valid_refs)
+        context = self._build_context(documents)
         prompt = self._build_prompt(question, context, valid_refs)
         
         # Step 4: Generate with grammar constraints
@@ -520,7 +743,9 @@ Respond with a JSON object containing:
             print(f"   Raw output: {raw_text[:200]}...")
             return StructuredOutput(
                 citations=[],
-                reasoning="JSON parsing failed",
+                reasoning=StructuredReasoning(steps=[
+                    ReasoningStep(statement="JSON parsing failed", step_type="conclusion")
+                ]),
                 answer=raw_text
             )
         
@@ -541,9 +766,12 @@ Respond with a JSON object containing:
         
         print(f"✓ Validated {len(validated_citations)}/{len(raw_citations)} citations")
         
+        # Parse reasoning into StructuredReasoning
+        reasoning = _parse_reasoning(output_dict.get('reasoning', ''))
+        
         return StructuredOutput(
             citations=validated_citations,
-            reasoning=output_dict.get('reasoning', ''),
+            reasoning=reasoning,
             answer=output_dict.get('answer', '')
         )
     
@@ -612,9 +840,12 @@ Respond with a JSON object containing:
             else:
                 errors.append(f"Invalid citation: {cit_str}")
         
+        # Parse reasoning into StructuredReasoning
+        reasoning = _parse_reasoning(output_dict.get('reasoning', ''))
+        
         structured = StructuredOutput(
             citations=validated_citations,
-            reasoning=output_dict.get('reasoning', ''),
+            reasoning=reasoning,
             answer=output_dict.get('answer', '')
         )
         
@@ -693,10 +924,23 @@ VALID_CITATIONS (use EXACTLY these IDs, no others):
 
 QUESTION: {question}
 
-IMPORTANT: Your response MUST be valid JSON with this exact format:
-{{"citations": ["citation_id_1", "citation_id_2"], "reasoning": "your analysis", "answer": "your answer"}}
+IMPORTANT: Your response MUST be valid JSON with structured chain-of-thought:
+{{
+  "citations": ["full_citation_id_1"],
+  "reasoning": {{
+    "steps": [
+      {{"statement": "Contract requires notice", "citations": ["doc_0_sec_I"], "type": "premise"}},
+      {{"statement": "Therefore notice is mandatory", "citations": [], "type": "conclusion"}}
+    ]
+  }},
+  "answer": "your answer"
+}}
 
-Only use citations from the VALID_CITATIONS list above. Do not make up citations.
+Note: 
+- Top-level "citations": use FULL IDs from VALID_CITATIONS list
+- Step-level "citations": use SHORT IDs like "doc_0_sec_I" (contract_id + "_sec_" + section_num)
+
+Do not make up citations.
 
 JSON Response:"""
         return prompt
@@ -722,7 +966,12 @@ JSON Response:"""
         if not valid_refs:
             return StructuredOutput(
                 citations=[],
-                reasoning="No valid citations found in retrieved documents.",
+                reasoning=StructuredReasoning(steps=[
+                    ReasoningStep(
+                        statement="No valid citations found in retrieved documents.",
+                        step_type="conclusion"
+                    )
+                ]),
                 answer="Unable to answer - no relevant context available."
             )
         
@@ -739,7 +988,9 @@ JSON Response:"""
             print(f"⚠️ JSON parse error")
             return StructuredOutput(
                 citations=[],
-                reasoning="JSON parsing failed",
+                reasoning=StructuredReasoning(steps=[
+                    ReasoningStep(statement="JSON parsing failed", step_type="conclusion")
+                ]),
                 answer=raw_output
             )
         
@@ -762,9 +1013,12 @@ JSON Response:"""
             print(f"⚠️ Removed {removed} invalid citation(s) (post-hoc)")
         print(f"✓ Validated {len(validated_citations)}/{len(raw_citations)} citations")
         
+        # Parse reasoning into StructuredReasoning
+        reasoning = _parse_reasoning(output_dict.get('reasoning', ''))
+        
         return StructuredOutput(
             citations=validated_citations,
-            reasoning=output_dict.get('reasoning', ''),
+            reasoning=reasoning,
             answer=output_dict.get('answer', '')
         )
     
