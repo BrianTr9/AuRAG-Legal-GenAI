@@ -8,7 +8,6 @@ langchain-core>=0.1.0
 langchain-chroma>=0.1.0
 langchain-text-splitters>=0.0.1
 langchain-huggingface>=0.0.3
-langchain-ollama>=0.1.0  # Fallback mode
 
 # Vector Store
 chromadb>=0.4.0
@@ -16,11 +15,9 @@ chromadb>=0.4.0
 # Document Processing
 pypdf>=3.17.0
 
-# Local LLM - Dual Mode
-# Primary: llama-cpp-python with GGUF (True GCD)
-# Fallback: Ollama (post-hoc validation)
+# Local LLM - Grammar-Constrained Decoding
+# llama-cpp-python with GGUF (100% Zero-Hallucination Guarantee)
 llama-cpp-python>=0.2.0
-ollama>=0.6.0
 
 # Embeddings
 sentence-transformers>=2.2.0

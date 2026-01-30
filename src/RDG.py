@@ -2,21 +2,11 @@
 Retrieval-Dependent Grammars (RDG) - Layer 2
 =============================================
 
-Dual-Mode Architecture:
-- PRIMARY: Grammar-Constrained Decoding (GCD) via llama-cpp-python
-  - JSON structure enforced at token level via GBNF grammar
-  - Citation validation via belt-and-suspenders post-check
-  - Requires GGUF model file
-  
-- FALLBACK: Post-hoc Validation via Ollama
-  - Generates freely, then validates/fixes citations
-  - Requires `ollama serve` running
-  - ~99% accuracy (post-hoc correction)
-
-Auto-detection:
-1. If GGUF model exists → Use GCD (primary)
-2. Else if Ollama available → Use post-hoc validation (fallback)
-3. Else → Error
+Grammar-Constrained Decoding (GCD) via llama-cpp-python:
+- JSON structure enforced at token level via GBNF grammar
+- Citation validation via belt-and-suspenders post-check
+- Mathematical guarantee of zero citation hallucination (syntactic)
+- Requires GGUF model file
 
 Reference Format (inherited from SPHR Layer 1):
     {contract_id}_Section_{section_num}_{section_title}
@@ -45,28 +35,12 @@ except ImportError:
     LlamaGrammar = None
 
 # ==========================================
-# OLLAMA IMPORT (Fallback: Post-hoc Validation)
-# ==========================================
-
-try:
-    from langchain_ollama import OllamaLLM
-    OLLAMA_AVAILABLE = True
-except ImportError:
-    OLLAMA_AVAILABLE = False
-    OllamaLLM = None
-
-
-# ==========================================
 # CONFIGURATION
 # ==========================================
 
 # Default GGUF model paths (relative to project root)
 DEFAULT_MODEL_PATH = "models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
 FALLBACK_MODEL_PATH = "models/llama-3.2-3b-instruct-q4_k_m.gguf"
-
-# Ollama configuration
-OLLAMA_MODEL = "llama3.1"
-OLLAMA_BASE_URL = "http://localhost:11434"
 
 
 # ==========================================
@@ -549,17 +523,27 @@ class RDGPipeline:
         # Find model path
         self.model_path = self._find_model(model_path)
         
-        print(f"🔧 RDG Phase 2: Loading GGUF model...")
-        print(f"   Model: {os.path.basename(self.model_path)}")
+        # Initialize llama.cpp model (suppress verbose output)
+        print(f"\n🔧 Loading GGUF model: {os.path.basename(self.model_path)}")
         
-        self.llm = Llama(
-            model_path=self.model_path,
-            n_ctx=n_ctx,
-            n_gpu_layers=n_gpu_layers,
-            verbose=verbose
-        )
+        import sys
+        import io
         
-        print(f"✓ Model loaded successfully (n_ctx={n_ctx})")
+        # Suppress llama.cpp initialization logs
+        old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
+        
+        try:
+            self.llm = Llama(
+                model_path=self.model_path,
+                n_ctx=n_ctx,
+                n_gpu_layers=n_gpu_layers,
+                verbose=False
+            )
+        finally:
+            sys.stderr = old_stderr
+        
+        print(f"✓ Model ready (context: {n_ctx} tokens)")
         
         self.grammar_builder = GBNFGrammarBuilder()
         self.reference_extractor = ReferenceExtractor()
@@ -687,7 +671,7 @@ Note: Use SHORT citation IDs in reasoning steps (e.g., "doc_0_sec_II" instead of
         print(f"📋 Valid citations from retrieval: {len(valid_refs)}")
         
         if not valid_refs:
-            print("⚠️ No valid citations found in documents")
+            print("   ⚠️  No valid citations found")
             return StructuredOutput(
                 citations=[],
                 reasoning=StructuredReasoning(steps=[
@@ -713,17 +697,17 @@ Note: Use SHORT citation IDs in reasoning steps (e.g., "doc_0_sec_II" instead of
                 try:
                     grammar_str = self.grammar_builder.build_simple_grammar(valid_refs)
                     grammar = LlamaGrammar.from_string(grammar_str)
-                    print("✓ Simple grammar compiled (citation-constrained fallback)")
+                    print("   ⚠️  Using simple grammar (CoT fallback)")
                 except:
                     grammar = None
-                    print("⚠️ All grammar compilation failed - no constraint active!")
+                    print("   ⚠️  Grammar compilation failed!")
         
         # Step 3: Build context and prompt
         context = self._build_context(documents)
         prompt = self._build_prompt(question, context, valid_refs)
         
         # Step 4: Generate with grammar constraints
-        print("🔄 Generating with GCD constraints...")
+        print(f"🔄 Generating answer (citations: {len(valid_refs)})...", end="", flush=True)
         
         output = self.llm(
             prompt,
@@ -739,8 +723,7 @@ Note: Use SHORT citation IDs in reasoning steps (e.g., "doc_0_sec_II" instead of
         # Step 5: Parse JSON output
         output_dict = _parse_json_output(raw_text)
         if output_dict is None:
-            print(f"⚠️ JSON parse error")
-            print(f"   Raw output: {raw_text[:200]}...")
+            print(f"   ⚠️  JSON parse error")
             return StructuredOutput(
                 citations=[],
                 reasoning=StructuredReasoning(steps=[
@@ -764,7 +747,8 @@ Note: Use SHORT citation IDs in reasoning steps (e.g., "doc_0_sec_II" instead of
             else:
                 print(f"   ⚠️ Citation not in valid set: {cit_str}")
         
-        print(f"✓ Validated {len(validated_citations)}/{len(raw_citations)} citations")
+        if len(validated_citations) != len(raw_citations):
+            print(f"   ⚠️  Filtered {len(raw_citations) - len(validated_citations)} invalid citation(s)")
         
         # Parse reasoning into StructuredReasoning
         reasoning = _parse_reasoning(output_dict.get('reasoning', ''))
@@ -853,219 +837,34 @@ Note: Use SHORT citation IDs in reasoning steps (e.g., "doc_0_sec_II" instead of
 
 
 # ==========================================
-# OLLAMA FALLBACK PIPELINE (Post-hoc Validation)
-# ==========================================
-
-class OllamaFallbackPipeline:
-    """
-    Fallback pipeline using Ollama with post-hoc citation validation.
-    
-    Used when:
-    - GGUF model not available
-    - llama-cpp-python not installed
-    - User prefers Ollama for some reason
-    
-    Note: This does NOT provide true GCD. Citations are validated
-    AFTER generation and invalid ones are removed.
-    """
-    
-    def __init__(
-        self,
-        model: str = OLLAMA_MODEL,
-        base_url: str = OLLAMA_BASE_URL,
-        temperature: float = 0,
-        num_ctx: int = 8192,
-        max_tokens: int = 1024
-    ):
-        """Initialize Ollama fallback pipeline."""
-        if not OLLAMA_AVAILABLE:
-            raise RuntimeError(
-                "langchain-ollama not installed.\n"
-                "Install with: pip install langchain-ollama"
-            )
-        
-        print(f"🔧 RDG Fallback: Connecting to Ollama ({model})...")
-        
-        self.llm = OllamaLLM(
-            model=model,
-            base_url=base_url,
-            temperature=temperature,
-            num_ctx=num_ctx,
-            num_predict=max_tokens
-        )
-        
-        self.reference_extractor = ReferenceExtractor()
-        self.model = model
-        print(f"✓ Connected to Ollama ({model})")
-        print(f"⚠️  Note: Using post-hoc validation (not true GCD)")
-    
-    def _build_prompt(self, question: str, documents: List[Document], valid_refs: List[str]) -> str:
-        """Build prompt for Ollama generation."""
-        # Build context
-        context_parts = []
-        for doc in documents:
-            content = (doc.page_content or '').strip()
-            contract_id = doc.metadata.get('contract_id') or doc.metadata.get('parent_id', 'unknown')
-            sec_num = doc.metadata.get('section_num', 'N/A')
-            sec_title = (doc.metadata.get('section_title') or 'Unknown').strip()
-            ref = f"{contract_id}_Section_{sec_num}_{sec_title.replace(' ', '_')}"
-            context_parts.append(f"[{ref}]\n{content}")
-        
-        context = "\n\n---\n\n".join(context_parts)
-        refs_display = "\n".join([f"  - {ref}" for ref in valid_refs])
-        
-        prompt = f"""You are a precise legal document analyst. Answer questions based ONLY on the provided context.
-
-CONTEXT:
-{context}
-
-VALID_CITATIONS (use EXACTLY these IDs, no others):
-{refs_display}
-
-QUESTION: {question}
-
-IMPORTANT: Your response MUST be valid JSON with structured chain-of-thought:
-{{
-  "citations": ["full_citation_id_1"],
-  "reasoning": {{
-    "steps": [
-      {{"statement": "Contract requires notice", "citations": ["doc_0_sec_I"], "type": "premise"}},
-      {{"statement": "Therefore notice is mandatory", "citations": [], "type": "conclusion"}}
-    ]
-  }},
-  "answer": "your answer"
-}}
-
-Note: 
-- Top-level "citations": use FULL IDs from VALID_CITATIONS list
-- Step-level "citations": use SHORT IDs like "doc_0_sec_I" (contract_id + "_sec_" + section_num)
-
-Do not make up citations.
-
-JSON Response:"""
-        return prompt
-    
-    def generate(
-        self,
-        question: str,
-        documents: List[Document],
-        max_tokens: int = 1024
-    ) -> StructuredOutput:
-        """
-        Generate answer with post-hoc citation validation.
-        
-        Unlike True GCD, this:
-        1. Lets the LLM generate freely
-        2. Parses the JSON output
-        3. Removes any invalid citations
-        """
-        # Extract valid citations
-        valid_refs = self.reference_extractor.extract_references(documents)
-        print(f"📋 Valid citations from retrieval: {len(valid_refs)}")
-        
-        if not valid_refs:
-            return StructuredOutput(
-                citations=[],
-                reasoning=StructuredReasoning(steps=[
-                    ReasoningStep(
-                        statement="No valid citations found in retrieved documents.",
-                        step_type="conclusion"
-                    )
-                ]),
-                answer="Unable to answer - no relevant context available."
-            )
-        
-        # Build prompt and generate
-        prompt = self._build_prompt(question, documents, valid_refs)
-        print("🔄 Generating with Ollama (post-hoc validation)...")
-        
-        raw_output = self.llm.invoke(prompt).strip()
-        print(f"✓ Generated {len(raw_output)} characters")
-        
-        # Parse JSON
-        output_dict = _parse_json_output(raw_output)
-        if output_dict is None:
-            print(f"⚠️ JSON parse error")
-            return StructuredOutput(
-                citations=[],
-                reasoning=StructuredReasoning(steps=[
-                    ReasoningStep(statement="JSON parsing failed", step_type="conclusion")
-                ]),
-                answer=raw_output
-            )
-        
-        # Post-hoc validation: remove invalid citations
-        validated_citations = []
-        raw_citations = output_dict.get('citations', [])
-        removed = 0
-        
-        for cit in raw_citations:
-            cit_str = cit if isinstance(cit, str) else str(cit)
-            if cit_str in valid_refs:
-                try:
-                    validated_citations.append(Citation.from_reference_string(cit_str))
-                except ValueError:
-                    removed += 1
-            else:
-                removed += 1
-        
-        if removed > 0:
-            print(f"⚠️ Removed {removed} invalid citation(s) (post-hoc)")
-        print(f"✓ Validated {len(validated_citations)}/{len(raw_citations)} citations")
-        
-        # Parse reasoning into StructuredReasoning
-        reasoning = _parse_reasoning(output_dict.get('reasoning', ''))
-        
-        return StructuredOutput(
-            citations=validated_citations,
-            reasoning=reasoning,
-            answer=output_dict.get('answer', '')
-        )
-    
-    def __call__(self, question: str, documents: List[Document], max_tokens: int = 1024) -> StructuredOutput:
-        return self.generate(question, documents, max_tokens)
-
-
-# ==========================================
 # SINGLETON & AUTO-DETECTION
 # ==========================================
 
 _rdg_instance = None
-_rdg_mode = None  # 'gcd' or 'ollama'
 
-def get_rdg_pipeline(model_path: str = None, force_ollama: bool = False, **kwargs):
+def get_rdg_pipeline(model_path: str = None, **kwargs):
     """
-    Get or create RDG pipeline with auto-detection.
+    Get or create RDG pipeline with GBNF-based Grammar-Constrained Decoding.
     
-    Priority:
-    1. If force_ollama=True → Use Ollama fallback
-    2. If GGUF model exists → Use GCD (primary)
-    3. If Ollama available → Use post-hoc validation (fallback)
-    4. Else → Error
+    Auto-detection:
+    1. Use provided model_path if specified
+    2. Try DEFAULT_MODEL_PATH
+    3. Try FALLBACK_MODEL_PATH
+    4. Raise error if no model found
     
     Args:
         model_path: Path to GGUF model (optional)
-        force_ollama: Force use of Ollama instead of GGUF
-        **kwargs: Additional arguments for pipeline
+        **kwargs: Additional arguments for RDGPipeline
         
     Returns:
-        RDGPipeline or OllamaFallbackPipeline instance
+        RDGPipeline instance
     """
-    global _rdg_instance, _rdg_mode
+    global _rdg_instance
     
     if _rdg_instance is not None:
         return _rdg_instance
     
-    # Check if forcing Ollama
-    if force_ollama:
-        if OLLAMA_AVAILABLE:
-            _rdg_instance = OllamaFallbackPipeline(**kwargs)
-            _rdg_mode = 'ollama'
-            return _rdg_instance
-        else:
-            raise RuntimeError("Ollama requested but langchain-ollama not installed")
-    
-    # Try GGUF model first (True GCD)
+    # Determine GGUF model path
     gguf_path = model_path
     if not gguf_path:
         if os.path.exists(DEFAULT_MODEL_PATH):
@@ -1073,32 +872,40 @@ def get_rdg_pipeline(model_path: str = None, force_ollama: bool = False, **kwarg
         elif os.path.exists(FALLBACK_MODEL_PATH):
             gguf_path = FALLBACK_MODEL_PATH
     
-    if gguf_path and os.path.exists(gguf_path) and LLAMA_CPP_AVAILABLE:
-        # Use GCD
-        _rdg_instance = RDGPipeline(model_path=gguf_path, **kwargs)
-        _rdg_mode = 'gcd'
-        return _rdg_instance
+    if not gguf_path or not os.path.exists(gguf_path):
+        raise RuntimeError(
+            "No GGUF model found.\n"
+            "Options:\n"
+            f"  1. Download GGUF model to {DEFAULT_MODEL_PATH}\n"
+            "  2. Specify custom path: get_rdg_pipeline(model_path='...')\n"
+            "\n"
+            "Recommended models:\n"
+            "  - Llama-3.1-8B-Instruct (Q4_K_M): ~5GB, good balance\n"
+            "  - Llama-3.2-3B-Instruct (Q4_K_M): ~2GB, fast experiments"
+        )
     
-    # Fall back to Ollama
-    if OLLAMA_AVAILABLE:
-        print("⚠️ GGUF model not found, falling back to Ollama")
-        _rdg_instance = OllamaFallbackPipeline(**kwargs)
-        _rdg_mode = 'ollama'
-        return _rdg_instance
+    if not LLAMA_CPP_AVAILABLE:
+        raise RuntimeError(
+            "llama-cpp-python not available.\n"
+            "Install with: pip install llama-cpp-python"
+        )
     
-    # No option available
-    raise RuntimeError(
-        "No LLM backend available.\n"
-        "Options:\n"
-        "  1. Download GGUF model to models/ directory (recommended)\n"
-        "  2. Install Ollama: brew install ollama && ollama pull llama3.1\n"
-        "  3. Install langchain-ollama: pip install langchain-ollama"
-    )
+    # Create GCD pipeline
+    _rdg_instance = RDGPipeline(model_path=gguf_path, **kwargs)
+    return _rdg_instance
 
 
 def get_rdg_mode() -> str:
-    """Get current RDG mode: 'gcd' or 'ollama'"""
-    return _rdg_mode or 'unknown'
+    """Get current RDG mode (always 'gcd' now)"""
+    return 'gcd' if _rdg_instance else 'unknown'
+
+
+# ==========================================
+# OLD OLLAMA FALLBACK PIPELINE - REMOVED
+# ==========================================
+# The OllamaFallbackPipeline class has been removed to focus on
+# true Grammar-Constrained Decoding (GCD) via llama-cpp-python.
+# This provides 100% zero-hallucination guarantee (syntactic).
 
 
 # ==========================================

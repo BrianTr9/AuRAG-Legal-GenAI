@@ -309,15 +309,18 @@ while True:
         if not question:
             continue
         
-        print("\n🔍 Retrieving context (Layer 1: SPHR)...")
+        print("\n" + "="*60)
+        print("🔍 Retrieving context...")
         result = answer_with_sources(question)
         
         # Output structured JSON
         if result.get('structured_output'):
             mode = get_rdg_mode()
-            mode_label = "GCD" if mode == 'gcd' else "Post-hoc Validation"
-            print(f"\n📄 Structured Output ({mode_label}):")
+            mode_label = "Grammar-Constrained Decoding" if mode == 'gcd' else "Post-hoc Validation"
+            print(f"\n📄 Answer ({mode_label}):")
+            print("="*60)
             print(json.dumps(result['structured_output'], indent=2))
+            print("="*60)
         else:
             print(f"\n📖 Answer: {result['answer']}")
     
