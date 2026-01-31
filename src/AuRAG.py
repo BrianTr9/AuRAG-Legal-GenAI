@@ -44,13 +44,13 @@ TOP_K = 8                    # Top-k children to retrieve
 
 # Layer 2: RDG Model Configuration
 N_GPU_LAYERS = -1           # All layers on GPU (-1 = auto)
-N_CTX = 8192                # Context window for GGUF model
+N_CTX = 16384               # Context window for GGUF model (increased to 16K)
 
 # LLM Generation Configuration
-MAX_TOKENS = 1024     # Max output tokens for structured JSON output
+MAX_TOKENS = 3072     # Max output tokens for structured JSON output
 
 # Retrieval & Context Configuration
-CONTEXT_BUDGET = 6000  # Max tokens for retrieved context documents
+CONTEXT_BUDGET = 12000  # Max tokens for retrieved context documents
 
 # ==========================================
 # HELPER FUNCTIONS

@@ -490,7 +490,7 @@ class RDGPipeline:
     def __init__(
         self, 
         model_path: str = None, 
-        n_ctx: int = 8192, 
+        n_ctx: int = 16384, 
         n_gpu_layers: int = -1,
         verbose: bool = False
     ):
@@ -499,7 +499,7 @@ class RDGPipeline:
         
         Args:
             model_path: Path to GGUF model file (auto-detected if None)
-            n_ctx: Context window size (default: 8192)
+            n_ctx: Context window size (default: 16384)
             n_gpu_layers: GPU layers (-1 = all on GPU, 0 = CPU only)
             verbose: Show detailed llama.cpp logs
         """
