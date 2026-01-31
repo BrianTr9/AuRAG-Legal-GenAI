@@ -177,6 +177,47 @@ class HierarchicalChunker:
         return text.translate(str.maketrans(fw, hw))
 
     @staticmethod
+    def _roman_to_arabic(roman: str) -> int:
+        """Convert Roman numeral (I, II, III, IV, V, X, etc.) to Arabic integer.
+
+        Returns -1 for invalid input.
+        """
+        if not roman or not isinstance(roman, str):
+            return -1
+        roman = roman.strip().upper()
+        vals = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}
+        total = 0
+        prev = 0
+        for ch in reversed(roman):
+            if ch not in vals:
+                return -1
+            cur = vals[ch]
+            if cur < prev:
+                total -= cur
+            else:
+                total += cur
+            prev = cur
+        return total if total > 0 else -1
+
+    @staticmethod
+    def _arabic_to_roman(num: int) -> str:
+        """Convert Arabic integer (1-3999) to Roman numeral string. Returns empty string if out of range."""
+        if not isinstance(num, int) or num <= 0 or num >= 4000:
+            return ""
+        pairs = [
+            (1000, 'M'), (900, 'CM'), (500, 'D'), (400, 'CD'),
+            (100, 'C'), (90, 'XC'), (50, 'L'), (40, 'XL'),
+            (10, 'X'), (9, 'IX'), (5, 'V'), (4, 'IV'), (1, 'I')
+        ]
+        out = []
+        for val, sym in pairs:
+            count = num // val
+            if count:
+                out.append(sym * count)
+                num -= val * count
+        return ''.join(out)
+
+    @staticmethod
     def _kanji_numeral_to_int(text: str) -> int:
         """Convert common Japanese kanji numerals to int (supports up to 万)."""
         if not text:
@@ -923,20 +964,58 @@ class HierarchicalChunker:
             
             # Add child to each referenced parent (if it exists and isn't already there)
             for sec_num in referenced_section_nums:
-                # Handle cases where referenced section may be a subsection
-                # Try exact match first, then try major section (e.g., "1.2" -> "1")
+                if not sec_num:
+                    continue
+
+                parent_id = None
+
+                # Try exact match first
                 parent_id = section_num_to_parent_id.get(sec_num)
-                
-                if not parent_id and '.' in sec_num:
-                    # If subsection reference, try major section
+
+                # If not found, attempt numeral normalization lookups
+                if not parent_id and isinstance(sec_num, str):
+                    sec_norm = sec_num.strip()
+                    # If reference is Arabic (digits), try Roman match (e.g., '5' -> 'V')
+                    if sec_norm.isdigit():
+                        try:
+                            arabic = int(sec_norm)
+                            roman = self._arabic_to_roman(arabic)
+                            if roman:
+                                parent_id = section_num_to_parent_id.get(roman)
+                        except Exception:
+                            pass
+                    else:
+                        # If reference looks like Roman, try Arabic match (e.g., 'V' -> '5')
+                        arabic_val = self._roman_to_arabic(sec_norm)
+                        if arabic_val > 0:
+                            parent_id = section_num_to_parent_id.get(str(arabic_val))
+
+                # If still not found, and sec_num is a subsection like '1.2', try major section
+                if not parent_id and isinstance(sec_num, str) and '.' in sec_num:
                     major_sec_num = sec_num.split('.')[0]
                     parent_id = section_num_to_parent_id.get(major_sec_num)
-                
+
+                    # If major still not found, try normalization on major
+                    if not parent_id:
+                        major_norm = major_sec_num.strip()
+                        if major_norm.isdigit():
+                            try:
+                                roman = self._arabic_to_roman(int(major_norm))
+                                if roman:
+                                    parent_id = section_num_to_parent_id.get(roman)
+                            except Exception:
+                                pass
+                        else:
+                            arabic_val = self._roman_to_arabic(major_norm)
+                            if arabic_val > 0:
+                                parent_id = section_num_to_parent_id.get(str(arabic_val))
+
                 # Add child to this parent if found and not already linked
-                if parent_id and child.chunk_id not in parent_to_children.get(parent_id, []):
+                if parent_id:
                     if parent_id not in parent_to_children:
                         parent_to_children[parent_id] = []
-                    parent_to_children[parent_id].append(child.chunk_id)
+                    if child.chunk_id not in parent_to_children.get(parent_id, []):
+                        parent_to_children[parent_id].append(child.chunk_id)
         
         return parent_to_children
 
