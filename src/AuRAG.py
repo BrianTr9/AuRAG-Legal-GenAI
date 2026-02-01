@@ -40,7 +40,7 @@ CHUNKS_OUTPUT = "data/processed/chunks.json"
 # Layer 1: Hierarchical Chunking Configuration
 CHILD_CHUNK_SIZE = 300      # Tokens per child chunk
 CHILD_CHUNK_OVERLAP = 90    # Token overlap between children
-TOP_K = 8                    # Top-k children to retrieve
+TOP_K = 5                    # Top-k children to retrieve
 
 # Layer 2: RDG Model Configuration
 N_GPU_LAYERS = -1           # All layers on GPU (-1 = auto)
