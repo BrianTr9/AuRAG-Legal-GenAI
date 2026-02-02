@@ -255,32 +255,35 @@ class RDGPipeline:
         refs_display = "\n".join([f"  - {r}" for r in valid_refs])
         return f"""<|start_header_id|>system<|end_header_id|>
 
-You are a precise legal document analyst. 
+You are a systematic reasoning assistant. Answer based ONLY on the provided context.
 
-IMPORTANT RULES:
-1. Use ONLY the citations listed in VALID_CITATIONS below.
-2. Structure your response EXACTLY as the JSON format below.
-3. Provide REASONING STEPS first, then the FINAL ANSWER.
+RULES:
+1. Every factual claim must cite a source from VALID_CITATIONS.
+2. Use step-by-step reasoning: premise (context fact) → inference (logical deduction) → conclusion.
+3. If context is insufficient, state this explicitly.
+4. Do NOT use external knowledge.
 
 <|eot_id|><|start_header_id|>user<|end_header_id|>
 
 CONTEXT:
 {context_str}
 
-VALID_CITATIONS (Strictly constrained):
+VALID_CITATIONS:
 {refs_display}
 
 QUESTION: {question}
 
-Respond with this JSON structure:
+JSON FORMAT:
 {{
   "reasoning": {{
     "steps": [
-      {{ "statement": "Analysis step 1...", "citations": ["doc_0_sec_I"], "type": "premise" }},
-      {{ "statement": "Analysis step 2...", "citations": ["doc_0_sec_II"], "type": "inference" }}
+      {{ "statement": "Context states X...", "citations": ["doc_0_sec_I"], "type": "premise" }},
+      {{ "statement": "From X, we deduce Y...", "citations": ["doc_0_sec_I"], "type": "inference" }},
+      {{ "statement": "Context states Z...", "citations": ["doc_1_sec_II"], "type": "premise" }},
+      {{ "statement": "Combining Y and Z...", "citations": ["doc_0_sec_I", "doc_1_sec_II"], "type": "conclusion" }}
     ]
   }},
-  "answer": "Final concise answer here..."
+  "answer": "Direct answer synthesizing reasoning..."
 }}
 
 NOTE: 
