@@ -1,15 +1,14 @@
 """
-Retrieval-Dependent Grammars (RDG) - Layer 2 (Research Edition v3)
-==================================================================
-Hybrid Implementation:
-- Architecture: RDG2 (Concise, Modular)
-- Logic: RDG.py (Mathematical Guarantee, Set Intersection Filter)
-- prompt: RDG.py (Strict Reasoning -> Answer -> Citations)
+Retrieval-Dependent Grammars (RDG) - Layer 2
+============================================
 
-Features:
-1. Dynamic GBNF: Constraints built on-the-fly from retrieved context.
-2. Structured CoT: Enforces 'Reasoning -> Answer -> Citations' flow.
-3. Logical Consistency: Set(Retrieved) ∩ Set(Reasoning) ∩ Set(Generated).
+Grammar-constrained citation generation for auditable RAG.
+
+Core Features:
+- GBNF Grammar: Token-level constraints from retrieved documents
+- Structured Chain-of-Thought: Enforces reasoning → answer flow
+- Zero-Syntatic-Citation-Hallucination: Set(Retrieved) ∩ Set(Reasoning) ∩ Set(Generated)
+- Auto-Citation Collection: Final citations derived from reasoning steps
 
 Author: Trung Bao Truong
 Date: February 2026
@@ -49,7 +48,6 @@ except ImportError:
     LlamaGrammar = None
 
 DEFAULT_MODEL_PATH = "models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
-FALLBACK_MODEL_PATH = "models/llama-3.2-3b-instruct-q4_k_m.gguf"
 
 # ==========================================
 # DATA MODELS
@@ -236,8 +234,9 @@ class RDGPipeline:
     def __init__(self, model_path: str = None, n_ctx: int = 16384, n_gpu_layers: int = -1, verbose: bool = False):
         if not LLAMA_CPP_AVAILABLE: raise RuntimeError("llama-cpp-python missing")
         
-        self.model_path = model_path or (DEFAULT_MODEL_PATH if os.path.exists(DEFAULT_MODEL_PATH) else FALLBACK_MODEL_PATH)
-        if not os.path.exists(self.model_path): raise RuntimeError("GGUF Model not found")
+        self.model_path = model_path or DEFAULT_MODEL_PATH
+        if not os.path.exists(self.model_path):
+            raise RuntimeError(f"GGUF Model not found at {self.model_path}")
         
         print(f"\n🔧 Loading RDG Model: {os.path.basename(self.model_path)}")
         try:

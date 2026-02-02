@@ -1,15 +1,15 @@
 """
-Hierarchical Chunking for AuRAG Layer 1
-========================================
+Semantic-Preserving Hierarchical Retrieval (SPHR) - Layer 1
+==========================================================
 
-General hierarchical chunking with semantic boundary detection.
-Supports structured documents (contracts, legal docs, technical specs).
+Hierarchical chunking with parent-child structure for section-aware retrieval.
 
-Strategy:
-- Parent: Full sections (typically 1500-3000 tokens, split if too large)
-- Child: ~300 tokens with 90-token overlap (30%)
-- Semantic boundaries: \n\n → . → \n → ; → , (preserves paragraphs/sentences)
-- Metadata: Child → Parent mapping for retrieval expansion
+Approach:
+- Parents: Full sections (typically 1,000-3,000 tokens, split at semantic boundaries if oversized)
+- Children: ~300-token chunks with ~90-token overlap
+- Semantic boundaries: Preserves paragraph/sentence integrity
+- Retrieval: Expands top-k children to their parent sections
+- Cross-Reference Enrichment: Resolves §X.X.X references to actual section content
 
 Author: Trung Bao (Brian) Truong
 Date: January 2026

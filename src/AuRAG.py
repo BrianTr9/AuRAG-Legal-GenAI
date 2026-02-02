@@ -1,20 +1,15 @@
 """
 AuRAG: Auditable Retrieval-Augmented Generation
 ================================================
-Local RAG with Defense-in-Depth architecture:
-- Layer 1: Hierarchical Chunking (SPHR) - Section-aware retrieval
-- Layer 2: Grammar-Constrained Decoding (RDG) - Citation constraints
-- Layer 3: Deterministic Verification (planned)
 
-Dual-Mode Architecture:
-- PRIMARY: GCD via llama-cpp-python (JSON structure + citation validation)
-- FALLBACK: Post-hoc validation via Ollama (~99% accuracy)
+Local RAG system with two-layer architecture:
+- Layer 1 (SPHR): Hierarchical chunking and parent-child retrieval
+- Layer 2 (RDG): Grammar-constrained citation generation
 
-Core Components:
-- LLM: Llama-3.1-8B-Instruct (GGUF or Ollama)
-- Embeddings: BAAI/bge-small-en-v1.5
-- Vector DB: ChromaDB (local)
-- Chunking: Hierarchical with semantic boundaries
+Stack:
+- LLM: Llama-3.1-8B-Instruct (GGUF) with GBNF constraints
+- Embeddings: BAAI/bge-small-en-v1.5 (MPS-accelerated)
+- Vector DB: ChromaDB (persistent, local)
 """
 
 import os
@@ -28,7 +23,7 @@ from langchain_core.documents import Document
 
 # Import Layer 1 & Layer 2 implementations
 from SPHR import HierarchicalChunker, HierarchicalRetriever
-from RDG import get_rdg_pipeline, get_rdg_mode
+from RDG import get_rdg_pipeline
 
 # ==========================================
 # CONFIGURATION
@@ -79,14 +74,12 @@ def _load_documents(folder: str) -> List[Document]:
 # ==========================================
 # 1. INITIALIZE RDG PIPELINE (AUTO-DETECT)
 # ==========================================
-print("Initializing RDG Pipeline (auto-detecting mode)...")
+print("Initializing RDG Pipeline...")
 
 def get_rdg():
-    """Get or create RDG pipeline with auto-detection.
+    """Get or create RDG pipeline.
     
-    Priority:
-    1. GGUF model exists → True GCD (primary)
-    2. Ollama available → Post-hoc validation (fallback)
+    Uses GGUF model with Grammar-Constrained Decoding (GCD).
     """
     return get_rdg_pipeline(n_ctx=N_CTX, n_gpu_layers=N_GPU_LAYERS)
 
@@ -185,7 +178,7 @@ print(f"\n✓ Prepared {len(splits)} child chunks for vectorization")
 # ==========================================
 # 3. CREATE EMBEDDINGS & VECTOR DB
 # ==========================================
-# Fix: Delete old vector_db to prevent duplicate embeddings
+# Clean vector database before rebuilding
 print("\nBuilding vector database...")
 vector_db_path = "data/vector_db"
 if os.path.exists(vector_db_path):
@@ -241,11 +234,10 @@ def _build_sources(docs) -> List[Dict]:
 def answer_with_sources(question: str):
     """Get answer with sources using Grammar-Constrained Decoding.
     
-    AuRAG Phase 2 Flow:
-    1. Retrieve context (Layer 1: SPHR)
-    2. Extract valid citations from retrieved documents
-    3. Generate with GBNF grammar constraints (Layer 2: RDG)
-    4. Validate and return structured output with citations
+    Pipeline Flow:
+    1. Retrieve context (Layer 1: SPHR Hierarchical Retrieval)
+    2. Generate answer with grammar-constrained citations (Layer 2: RDG)
+    3. Return structured output with validated citations
     
     Args:
         question: User's query
@@ -291,7 +283,7 @@ def answer_with_sources(question: str):
 
 print("\n✓ System ready!")
 print(f"✓ Layer 1 (SPHR Hierarchical Retrieval): ACTIVE")
-print(f"✓ Layer 2 (RDG): ACTIVE (mode will be detected on first query)")
+print(f"✓ Layer 2 (RDG Grammar-Constrained Decoding): ACTIVE")
 
 # ==========================================
 # 5. CLI INTERFACE (Single-Click Operation)
@@ -315,9 +307,7 @@ while True:
         
         # Output structured JSON
         if result.get('structured_output'):
-            mode = get_rdg_mode()
-            mode_label = "Grammar-Constrained Decoding" if mode == 'gcd' else "Post-hoc Validation"
-            print(f"\n📄 Answer ({mode_label}):")
+            print(f"\n📄 Answer (Grammar-Constrained Decoding):")
             print("="*60)
             print(json.dumps(result['structured_output'], indent=2))
             print("="*60)
