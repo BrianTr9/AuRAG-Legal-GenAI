@@ -11,8 +11,10 @@ data/raw/
 data/vector_db/
 data/processed/
 tests/
-benchmark/
-evaluation/
+
+# Benchmark - only track COLIEE
+benchmark/*
+!benchmark/COLIEE/
 
 *.gguf
 
