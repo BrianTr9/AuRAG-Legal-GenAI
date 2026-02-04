@@ -19,7 +19,7 @@ import re
 import json
 import sys
 import io
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Literal
 from dataclasses import dataclass, field
 from langchain_core.documents import Document
 
@@ -171,8 +171,13 @@ class StructuredOutput:
 # ==========================================
 
 class GBNFGrammarBuilder:
-    def build_structured_cot_grammar(self, valid_citations: List[str]) -> str:
-        """Constructs GBNF grammar for Structured CoT."""
+    def build_structured_cot_grammar(self, valid_citations: List[str], answer_mode: Literal["freeform", "yn"] = "freeform") -> str:
+        """Constructs GBNF grammar for Structured CoT.
+
+        answer_mode:
+            - "freeform": answer is an arbitrary JSON string
+            - "yn": answer is strictly "Y" or "N" (as a JSON string)
+        """
         if not valid_citations:
             full_enum = short_enum = '"\"" "no_citation" "\""'
         else:
@@ -180,6 +185,8 @@ class GBNFGrammarBuilder:
             # Short IDs for steps
             short_ids = [Citation.get_short_id_from_reference(c) for c in valid_citations]
             short_enum = ' | '.join([f'"\\"" "{c.replace("\\", "\\\\").replace('"', '\\"')}" "\\""' for c in short_ids])
+
+        answer_rule = "string" if answer_mode == "freeform" else "yn-string"
         
         # Streamlined Grammar: Reasoning -> Answer (citations auto-collected from reasoning)
         return f'''
@@ -194,7 +201,9 @@ short-citation-list ::= "[]" | "[" ws short-citation (ws "," ws short-citation)*
 short-citation ::= {short_enum}
 step-type ::= "\\"premise\\"" | "\\"inference\\"" | "\\"conclusion\\""
 
-answer-field ::= "\\"answer\\"" ws ":" ws string
+answer-field ::= "\\"answer\\"" ws ":" ws {answer_rule}
+
+yn-string ::= "\\"Y\\"" | "\\"N\\""
 
 string ::= "\\"" char* "\\""
 char ::= [^"\\\\] | "\\\\" ["\\\\/bfnrtu] [0-9a-fA-F]*
@@ -250,8 +259,19 @@ class RDGPipeline:
         self.extractor = ReferenceExtractor()
         print(f"✓ Model Loaded (Ctx: {n_ctx})")
 
-    def _build_prompt(self, question: str, valid_refs: List[str], context_str: str) -> str:
+    def _build_prompt(self, question: str, valid_refs: List[str], context_str: str, answer_mode: Literal["freeform", "yn"] = "freeform") -> str:
         refs_display = "\n".join([f"  - {r}" for r in valid_refs])
+
+        task_hint = ""
+        json_example_answer = "Direct answer synthesizing reasoning..."
+        if answer_mode == "yn":
+            task_hint = (
+                "\nTASK:\n"
+                "- Output answer as 'Y' if the statement is entailed/true given the context, otherwise 'N'.\n"
+                "- You must choose exactly one of: Y or N.\n"
+            )
+            json_example_answer = "Y"
+
         return f"""<|start_header_id|>system<|end_header_id|>
 
 You are a systematic reasoning assistant. Answer based ONLY on the provided context.
@@ -261,6 +281,7 @@ RULES:
 2. Use step-by-step reasoning: premise (context fact) → inference (logical deduction) → conclusion.
 3. If context is insufficient, state this explicitly.
 4. Do NOT use external knowledge.
+{task_hint}
 
 <|eot_id|><|start_header_id|>user<|end_header_id|>
 
@@ -282,7 +303,7 @@ JSON FORMAT:
       {{ "statement": "Combining Y and Z...", "citations": ["doc_0_sec_I", "doc_1_sec_II"], "type": "conclusion" }}
     ]
   }},
-  "answer": "Direct answer synthesizing reasoning..."
+    "answer": "{json_example_answer}"
 }}
 
 NOTE: 
@@ -292,7 +313,14 @@ NOTE:
 <|eot_id|><|start_header_id|>assistant<|end_header_id|>
 """
 
-    def generate(self, question: str, documents: List[Document], max_tokens: int = 3072, temperature: float = 0) -> StructuredOutput:
+    def generate(
+        self,
+        question: str,
+        documents: List[Document],
+        max_tokens: int = 3072,
+        temperature: float = 0,
+        answer_mode: Literal["freeform", "yn"] = "freeform",
+    ) -> StructuredOutput:
         valid_refs = self.extractor.extract_references(documents)
         print(f"📋 Valid Citations: {len(valid_refs)}")
         
@@ -301,7 +329,7 @@ NOTE:
 
         # 1. Build Grammar
         try:
-            grammar_str = self.grammar_builder.build_structured_cot_grammar(valid_refs)
+            grammar_str = self.grammar_builder.build_structured_cot_grammar(valid_refs, answer_mode=answer_mode)
             grammar = LlamaGrammar.from_string(grammar_str)
         except Exception as e:
             return StructuredOutput([], StructuredReasoning([]), f"Grammar Error: {e}")
@@ -315,7 +343,7 @@ NOTE:
             ref = f"{c_id}_Section_{s_num}_{s_title}"
             context_parts.append(f"[{ref}]\n{doc.page_content.strip()}")
         
-        prompt = self._build_prompt(question, valid_refs, "\n\n---\n\n".join(context_parts))
+        prompt = self._build_prompt(question, valid_refs, "\n\n---\n\n".join(context_parts), answer_mode=answer_mode)
 
         # 3. Generate
         print(f"🔄 RDG Thinking...", end="", flush=True)
