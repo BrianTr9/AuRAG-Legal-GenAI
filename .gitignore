@@ -16,7 +16,13 @@ tests/
 benchmark/*
 !benchmark/COLIEE/
 
+# Evaluation - only track systems folder and Python files
+evaluation/*
+!evaluation/systems/
+!evaluation/*.py
+
 *.gguf
+*.json
 
 *.txt
 !requirements.txt
