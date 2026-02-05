@@ -13,6 +13,7 @@ and measures whether RAG systems cite only retrieved articles (hallucination-fre
 
 import argparse
 import json
+import random
 import time
 from pathlib import Path
 from typing import Dict, List, Any, Tuple
@@ -587,12 +588,16 @@ def main():
                        help='Limit to first N queries (for testing)')
     parser.add_argument('--rebuild-index', action='store_true',
                        help='Delete and rebuild the persisted vector DB before running (recommended for clean paper runs)')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     
     # Output
     parser.add_argument('--output-dir', type=str, default='evaluation',
                        help='Directory to save results')
     
     args = parser.parse_args()
+
+    # Set seed for reproducibility
+    random.seed(args.seed)
     
     # Resolve paths
     workspace_root = Path(__file__).parent.parent
