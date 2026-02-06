@@ -154,7 +154,8 @@ def load_coliee_queries(xml_path: Path) -> List[Dict[str, Any]]:
         relevant_articles: List[str] = []
         for art in pair.findall('article'):
             val = ("".join(art.itertext()) if art is not None else "").strip()
-            if val.isdigit():
+            # Fix: Allow hyphens for articles like "424-4", "98-2"
+            if len(val) > 0:
                 relevant_articles.append(val)
         
         queries.append({

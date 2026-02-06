@@ -90,7 +90,14 @@ def load_coliee_queries(xml_path: Path) -> List[Dict[str, Any]]:
         ground_truth = (pair.get('label') or 'N').strip()
         t2_elem = pair.find('t2')
         question = "".join(t2_elem.itertext()).strip() if t2_elem is not None else ""
-        relevant_articles = [a.text.strip() for a in pair.findall('article') if a.text]
+        
+        # Relevant articles - use itertext() to handle nested elements, allow hyphens like "424-4"
+        relevant_articles: List[str] = []
+        for art in pair.findall('article'):
+            val = ("".join(art.itertext()) if art is not None else "").strip()
+            if len(val) > 0:
+                relevant_articles.append(val)
+        
         queries.append({
             'query_id': pair_id,
             'question': question,
