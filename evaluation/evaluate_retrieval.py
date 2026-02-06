@@ -439,7 +439,7 @@ def main():
     if args.output:
         output_path = Path(args.output)
     else:
-        output_path = output_dir / f"retrieval_results_{args.system}_k{args.top_k}.json"
+        output_path = output_dir / f"evaluation_results_layer1_retrieval_{args.system}_k{args.top_k}.json"
 
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(output, f, indent=2, ensure_ascii=False)

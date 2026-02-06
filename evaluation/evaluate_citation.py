@@ -661,7 +661,7 @@ def main():
     )
     
     # Save results
-    output_filename = f"citation_results_{args.system}_{args.year}_{args.embedding}_k{args.top_k}.json"
+    output_filename = f"evaluation_results_end2end_{args.system}_k{args.top_k}.json"
     if args.sample_queries:
         output_filename = output_filename.replace('.json', f'_sample{args.sample_queries}.json')
     

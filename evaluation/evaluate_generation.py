@@ -373,7 +373,7 @@ def main():
     if args.output:
         output_path = Path(args.output)
     else:
-        output_path = Path(__file__).parent / f"layer2_gt_results_{args.mode}.json"
+        output_path = Path(__file__).parent / f"evaluation_results_layer2_generation_{args.mode}_gt.json"
 
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
