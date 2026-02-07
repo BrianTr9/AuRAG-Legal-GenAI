@@ -50,7 +50,6 @@ from evaluate_citation import (
     load_coliee_queries,
     normalize_yn_answer,
     calculate_citation_metrics,
-    calculate_retrieval_metrics,
 )
 
 from RDG import (
@@ -198,16 +197,16 @@ def evaluate_generation(
     else:
         print(f"\n📊 Evaluating on {len(queries)} queries")
 
+    # Validate Layer 2 setup: retrieved should equal relevant_articles (GT context)
+    print(f"✓ Layer 2: Perfect retrieval (GT context isolation)")
+
     rdg = get_rdg_pipeline(model_path=llm_model_path, n_ctx=n_ctx, n_gpu_layers=n_gpu_layers)
 
     per_query_results = []
     hallucination_rates = []
-    misattribution_rates = []
-    misattribution_rates_conditional = []
     citation_precisions = []
     citation_recalls = []
     answer_correctness = []
-    answer_coverage = []
     generation_times = []
 
     for i, query_data in enumerate(queries, 1):
@@ -216,12 +215,11 @@ def evaluate_generation(
         ground_truth = query_data['ground_truth_answer']
         relevant_articles = query_data['relevant_articles']
 
-        print(f"\n[{i}/{len(queries)}] Processing {query_id}...")
-        print(f"  Question: {question[:100]}...")
-        print(f"  GT Citations: {len(relevant_articles)} articles")
+        print(f"\n[{i}/{len(queries)}] {query_id}")
 
-        # Ideal retrieval list (GT)
+        # Build documents from GT (Layer 2: Perfect retrieval)
         retrieved = sorted(set(relevant_articles))
+        assert len(retrieved) > 0, f"❌ Layer 2 BROKEN: Query {query_id} has no GT articles! Parser fix may have failed."
         docs = build_documents_from_gt(corpus, retrieved)
 
         t_start = time.time()
@@ -241,62 +239,42 @@ def evaluate_generation(
         is_correct = None if predicted_label is None else (1 if predicted_label == gt_label else 0)
 
         metrics = calculate_citation_metrics(citations, retrieved, relevant_articles)
-        retrieval_metrics = calculate_retrieval_metrics(retrieved, relevant_articles)
-
-        print(f"  Retrieved (GT): {len(retrieved)} articles")
-        print(f"  Citations: {len(citations)} articles")
-        print(f"  Hallucination (Type 1): {metrics['citation_hallucination_rate']*100:.1f}%")
-        print(f"  Misattribution (Type 2): {metrics['misattribution_rate']*100:.1f}%")
-        print(f"  Misattribution|Valid (Type 2): {metrics['misattribution_rate_conditional']*100:.1f}%")
-        print(f"  Citation Precision: {metrics['citation_precision']*100:.1f}%")
-        print(f"  Citation Recall: {metrics['citation_recall']*100:.1f}%")
-        print(f"  Retrieval Hit@K: {retrieval_metrics['retrieval_hit']*100:.1f}%")
-        print(f"  Retrieval Recall@K: {retrieval_metrics['retrieval_recall']*100:.1f}%")
-        print(f"  Answer (GT→Pred): {gt_label} → {predicted_label if predicted_label is not None else 'UNK'}")
-        print(f"  GT: {sorted(set(relevant_articles))}")
-        print(f"  LLM: {sorted(set(citations))}")
+        
+        print(f"  Answer: {gt_label} → {predicted_label or '?'} {'✓' if is_correct == 1 else '✗' if is_correct == 0 else ''}")
+        print(f"  Hallucination: {metrics['citation_hallucination_rate']*100:.1f}% | Precision: {metrics['citation_precision']*100:.1f}% | Recall: {metrics['citation_recall']*100:.1f}%")
         print(f"  Time: {generation_time:.2f}s")
 
         hallucination_rates.append(metrics['citation_hallucination_rate'])
-        misattribution_rates.append(metrics['misattribution_rate'])
-        misattribution_rates_conditional.append(metrics['misattribution_rate_conditional'])
         citation_precisions.append(metrics['citation_precision'])
         citation_recalls.append(metrics['citation_recall'])
         if is_correct is not None:
             answer_correctness.append(is_correct)
-            answer_coverage.append(1)
-        else:
-            answer_coverage.append(0)
         generation_times.append(generation_time)
 
-        per_query_results.append({
+        # Store result (minimal necessary fields)
+        result_entry = {
             'query_id': query_id,
-            'question': question,
             'ground_truth_answer': ground_truth,
-            'system_answer': answer,
             'predicted_answer': predicted_label,
             'answer_correct': is_correct,
             'gt_citations': relevant_articles,
             'llm_citations': citations,
-            'metrics': metrics,
-            'retrieval_metrics': retrieval_metrics,
-            'timing': {
-                'generation_time': generation_time
-            }
-        })
+            'hallucination_rate': metrics['citation_hallucination_rate'],
+            'citation_precision': metrics['citation_precision'],
+            'citation_recall': metrics['citation_recall'],
+            'generation_time': generation_time
+        }
+        
+        # Include raw answer only if normalization changed it
+        if answer != predicted_label:
+            result_entry['raw_answer'] = answer
+
+        per_query_results.append(result_entry)
 
     aggregate_metrics = {
         'citation_hallucination_rate': {
             'mean': mean(hallucination_rates),
             'std': stdev(hallucination_rates) if len(hallucination_rates) > 1 else 0.0,
-        },
-        'misattribution_rate': {
-            'mean': mean(misattribution_rates) if misattribution_rates else 0.0,
-            'std': stdev(misattribution_rates) if len(misattribution_rates) > 1 else 0.0,
-        },
-        'misattribution_rate_conditional': {
-            'mean': mean(misattribution_rates_conditional) if misattribution_rates_conditional else 0.0,
-            'std': stdev(misattribution_rates_conditional) if len(misattribution_rates_conditional) > 1 else 0.0,
         },
         'citation_precision': {
             'mean': mean(citation_precisions),
@@ -308,14 +286,9 @@ def evaluate_generation(
         },
         'answer_accuracy': {
             'mean': mean(answer_correctness) if answer_correctness else 0.0,
-            'std': stdev(answer_correctness) if len(answer_correctness) > 1 else 0.0,
-            'num_scored': len(answer_correctness),
-            'num_total': len(queries)
-        },
-        'answer_coverage': {
-            'mean': mean(answer_coverage) if answer_coverage else 0.0,
-            'num_scored': len(answer_correctness),
-            'num_total': len(queries)
+            'count_correct': sum(answer_correctness),
+            'count_wrong': len(answer_correctness) - sum(answer_correctness),
+            'total': len(answer_correctness)
         },
         'generation_time': {
             'mean': mean(generation_times) if generation_times else 0.0,

@@ -241,7 +241,9 @@ def calculate_citation_metrics(
     # - misattribution_rate_conditional: conditioned on syntactically-valid citations |C ∩ R|
     validly_retrieved_citations = cited_set & retrieved_set
     misattributed_citations = validly_retrieved_citations - relevant_set
-    misattribution_rate = len(misattributed_citations) / len(cited_set) if len(cited_set) > 0 else 0.0
+    # Metric: Misattribution Rate Conditional (TYPE 2: SEMANTIC ERROR)
+    # Definition: Of the citations that were valid (in retrieved set), how many were NOT in GT?
+    # This isolates semantic selection error from syntactic hallucination.
     misattribution_rate_conditional = (
         len(misattributed_citations) / len(validly_retrieved_citations)
         if len(validly_retrieved_citations) > 0 else 0.0
@@ -261,9 +263,8 @@ def calculate_citation_metrics(
     return {
         'citation_hallucination_rate': hallucination_rate,  # Core thesis metric (Fabrication/Type 1)
         'fabrication_rate': hallucination_rate,             # Explicit alias for Type 1
-        'misattribution_rate': misattribution_rate,         # Type 2 Semantic Hallucination
         'misattribution_rate_conditional': misattribution_rate_conditional,  # Type 2 conditioned on |C ∩ R|
-        'non_gt_citation_rate': misattribution_rate,         # Alias for paper-safe wording
+        
         'citation_precision': citation_precision,
         'citation_recall': citation_recall,
         'num_citations': len(cited_set),
