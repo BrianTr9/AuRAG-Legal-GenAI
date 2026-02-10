@@ -22,28 +22,30 @@ AuRAG introduces a two-layer defense architecture to address these:
 
 -   **Layer 1: SPHR (Structure-Preserving Hierarchical Retrieval)**
     -   *Mitigates Type 4 (Retrieval Failure).*
-    -   Leverages legal document structure (Sections/Articles) to index small child chunks for precise search, but retrieves full parent sections for context integrity.
+    -   Indexes small child chunks for precise search, but retrieves full parent sections based on legal document structure (Sections/Articles).
+    -   **Novelty:** Represents Domain Adaptation Novelty, leveraging the specific "legal document structure" to maximize retrieval specificity while maintaining contextual integrity.
     -   Ensures the LLM reasoning window contains complete statutory context, not just fragmented keywords.
 
 -   **Layer 2: RDG (Retrieval-Dependent Grammars)**
     -   *Eliminates Type 1 (Fabrication) & Mitigates Type 2/3.*
     -   Constructs a **dynamic GBNF grammar** on-the-fly based *only* on the retrieved context.
-    -   **Novelty:** Unlike static grammars IDG (Geng et al., 2023), AuRAG's grammar adapts to the retrieval set. If Article 30 and 31 are retrieved, the model is mathematically constrained to cite *only* {Article 30, Article 31} or nothing. It cannot physically generate a hallucinated "Article 99".
+    -   **Novelty:** Represents Technical/Architectural Novelty, solving the problem of Syntactic Correctness (guaranteeing valid citations). Unlike static grammars (IDG, Geng et al., 2023), AuRAG's grammar adapts to the retrieval set dynamically.
     -   Enforces **Structured Chain-of-Thought (CoT)**: `Premise → Inference → Conclusion` to improve reasoning quality.
+
 
 ---
 
-## 🏗 **Architecture**
+## 🛠 **Technical Implementation**
 
-### **1. SPHR (Layer 1)**
--   **Hierarchical Indexing:** Splits documents into Parent Sections (full context) and Child Chunks (searchable units).
--   **Cross-Reference Enrichment:** Resolves "see §X.X" references during indexing so chunks stand alone.
--   **Stack:** `LangChain`, `ChromaDB`, `HuggingFaceEmbeddings` (MPS-accelerated).
+### **Layer 1: Retrieval Stack**
+-   **Engine:** `LangChain` + `ChromaDB`.
+-   **Embeddings:** `BAAI/bge-small-en-v1.5`.
+-   **Cross-Reference Enrichment:** Resolves internal pointers (e.g., "see §123") before embedding, ensuring chunks are self-contained (Regex-based).
 
-### **2. RDG (Layer 2)**
--   **Constrained Decoding:** Uses `llama-cpp-python` with GBNF grammars.
--   **Dynamic Constraint:** The valid token set for citation fields is restricted to the IDs of retrieved documents at inference time.
--   **Stack:** `Llama-3.1-8B-Instruct (GGUF)`, `llama.cpp`.
+### **Layer 2: Generative Stack**
+-   **Inference:** `llama-cpp-python`.
+-   **Model:** `Meta-Llama-3.1-8B-Instruct` (GGUF Quantization).
+-   **Grammar:** Custom GBNF generator interacting directly with sampler logits to enforce citation constraints.
 
 ---
 
@@ -128,9 +130,9 @@ AuRAG/
 
 ---
 
-## 📜 **License**
+## **License**
 MIT License. See [LICENSE](LICENSE) for details.
 
-## ✍️ **Author**
+## **Author**
 **Trung Bao (Brian) Truong**  
 *Honours Thesis Project*
