@@ -96,9 +96,9 @@ python src/AuRAG.py
 
 ---
 
-## 📊 **Evaluation (COLIEE 2024)**
+## 📊 **Evaluation (COLIEE 2025)**
 
-AuRAG is evaluated on the **COLIEE 2024 (Statute Law)** benchmark.
+AuRAG is evaluated on the **COLIEE task 3 (Statute Law)** benchmark.
 
 ### **Metrics**
 -   **Citation Hallucination Rate (Type 1):** 0.0% (Guaranteed by RDG).
@@ -107,7 +107,7 @@ AuRAG is evaluated on the **COLIEE 2024 (Statute Law)** benchmark.
 
 ### **Run Evaluation**
 ```bash
-python evaluation/evaluate_citation.py --year R06 --system aurag --top-k 5
+python evaluation/evaluate_end2end.py --year R06 --system aurag --top-k 5
 ```
 
 ---

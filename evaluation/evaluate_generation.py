@@ -45,7 +45,7 @@ sys.path.insert(0, str(EVAL_PATH))
 sys.path.insert(0, str(SRC_PATH))
 
 # Local imports
-from evaluate_citation import (
+from evaluation.evaluate_end2end import (
     load_coliee_corpus,
     load_coliee_queries,
     normalize_yn_answer,
