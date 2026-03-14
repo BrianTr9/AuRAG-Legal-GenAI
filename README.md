@@ -120,7 +120,8 @@ AuRAG/
 │   ├── SPHR.py        # Layer 1: Hierarchical Chunking & Retrieval
 │   └── RDG.py         # Layer 2: Grammar-Constrained Generation
 ├── evaluation/
-│   ├── evaluate_citation.py  # COLIEE benchmark runner
+│   ├── evaluate_end2end.py   # End-to-end (retrieval + generation) benchmark
+│   ├── evaluate_generation.py # Layer-2 generation eval with GT retrieval
 │   └── systems/              # System wrappers for evaluation
 ├── data/
 │   ├── raw/           # Input documents

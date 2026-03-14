@@ -192,8 +192,8 @@ def calculate_citation_metrics(
             'fabrication_rate': float,  # alias of citation_hallucination_rate
 
             # --- Type 2 (Misattribution / Non-GT among retrieved)
-            'misattribution_rate': float,  # |(C ∩ R) \ GT| / |C|
-            'misattribution_rate_conditional': float,  # |(C ∩ R) \ GT| / |C ∩ R|
+            'misattribution_rate': float,  # |(C ∩ R) \\ GT| / |C|
+            'misattribution_rate_conditional': float,  # |(C ∩ R) \\ GT| / |C ∩ R|
             'non_gt_citation_rate': float,  # alias of misattribution_rate
 
             # --- Standard evidence metrics
@@ -204,8 +204,8 @@ def calculate_citation_metrics(
             'num_citations': int,
             'num_retrieved': int,
             'num_valid_retrieved_citations': int,  # |C ∩ R|
-            'num_hallucinated_citations': int,      # |C \ R|
-            'num_misattributed_citations': int,     # |(C ∩ R) \ GT|
+            'num_hallucinated_citations': int,      # |C \\ R|
+            'num_misattributed_citations': int,     # |(C ∩ R) \\ GT|
         }
     
     Example:
