@@ -39,6 +39,9 @@ class AuRAGConfig:
     child_chunk_overlap: int = 90
     top_k: int = 5
     context_budget: int = 12000
+    retrieval_mode: str = "dense"  # dense | bm25 | hybrid
+    bm25_weight: float = 0.5
+    rrf_k: int = 60
     
     # Layer 2: RDG Model
     n_gpu_layers: int = -1
@@ -234,7 +237,10 @@ class AuRAGPipeline:
             self.all_parent_chunks,
             self.parent_to_children,
             top_k=self.config.top_k,
-            context_budget=self.config.context_budget
+            context_budget=self.config.context_budget,
+            retrieval_mode=self.config.retrieval_mode,
+            bm25_weight=self.config.bm25_weight,
+            rrf_k=self.config.rrf_k,
         )
     
     def _get_rdg(self):

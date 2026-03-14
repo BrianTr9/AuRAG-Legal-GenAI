@@ -21,6 +21,8 @@ from typing import List, Dict, Tuple
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+from rank_bm25 import BM25Okapi
+
 try:
     import tiktoken
 except ImportError:
@@ -1044,7 +1046,10 @@ class HierarchicalRetriever:
         parent_chunks: List['Chunk'], 
         parent_to_children: Dict[str, List[str]],
         top_k: int = 4,
-        context_budget: int = 3000
+        context_budget: int = 3000,
+        retrieval_mode: str = "dense",
+        bm25_weight: float = 0.5,
+        rrf_k: int = 60,
     ):
         """
         Initialize hierarchical retriever
@@ -1055,18 +1060,122 @@ class HierarchicalRetriever:
             parent_to_children: Mapping of parent_id → [child_ids]
             top_k: Number of child chunks to retrieve
             context_budget: Maximum tokens allowed in context (default 3000, leaving 1K for generation in 4K window)
+            retrieval_mode: Retrieval strategy: "dense", "bm25", or "hybrid"
+            bm25_weight: Weight for BM25 in weighted-RRF fusion (hybrid mode)
+            rrf_k: RRF constant (larger = flatter rank decay)
         """
         self.vectordb = vectordb
         self.parent_chunks = {p.chunk_id: p for p in parent_chunks}
         self.parent_to_children = parent_to_children
         self.top_k = top_k
         self.context_budget = context_budget
+        self.retrieval_mode = retrieval_mode.lower()
+        self.bm25_weight = max(0.0, min(1.0, bm25_weight))
+        self.dense_weight = 1.0 - self.bm25_weight
+        self.rrf_k = max(1, int(rrf_k))
+
+        if self.retrieval_mode not in {"dense", "bm25", "hybrid"}:
+            raise ValueError(
+                f"Invalid retrieval_mode='{retrieval_mode}'. Choose from: dense, bm25, hybrid"
+            )
 
         # Reverse index so a child can expand to multiple parents (cross-ref enrichment).
         self.child_to_parents = {}
         for parent_id, child_ids in (parent_to_children or {}).items():
             for child_id in child_ids or []:
                 self.child_to_parents.setdefault(child_id, []).append(parent_id)
+
+        # Child metadata cache + optional BM25 index.
+        self.child_id_to_parent = {}
+        self.child_id_to_text = {}
+        self.child_ids = []
+        self.bm25 = None
+
+        try:
+            raw = self.vectordb.get(include=["metadatas", "documents"])
+            metadatas = raw.get("metadatas", []) if raw else []
+            documents = raw.get("documents", []) if raw else []
+
+            for metadata, text in zip(metadatas, documents):
+                if not metadata:
+                    continue
+                chunk_id = metadata.get("chunk_id")
+                parent_id = metadata.get("parent_id")
+                if not chunk_id:
+                    continue
+                self.child_ids.append(chunk_id)
+                self.child_id_to_parent[chunk_id] = parent_id
+                self.child_id_to_text[chunk_id] = text or ""
+
+            if self.retrieval_mode in {"bm25", "hybrid"} and self.child_ids:
+                tokenized = [self._bm25_tokenize(self.child_id_to_text[cid]) for cid in self.child_ids]
+                self.bm25 = BM25Okapi(tokenized)
+        except Exception:
+            # Keep dense retrieval as fallback if vector store metadata fetch fails.
+            self.retrieval_mode = "dense"
+
+    @staticmethod
+    def _bm25_tokenize(text: str) -> List[str]:
+        """Tokenizer for mixed legal text (English + Japanese).
+
+        - English/numeric tokens: regex word extraction
+        - CJK spans: character bigrams for whitespace-free Japanese text
+        """
+        if not text:
+            return []
+
+        s = str(text).lower()
+        tokens: List[str] = re.findall(r"[a-z0-9]+(?:-[a-z0-9]+)?", s)
+
+        cjk_spans = re.findall(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]+", s)
+        for span in cjk_spans:
+            if len(span) == 1:
+                tokens.append(span)
+            else:
+                tokens.extend(span[i:i+2] for i in range(len(span) - 1))
+
+        return tokens
+
+    def _dense_child_ids(self, query: str) -> List[str]:
+        docs = self.vectordb.similarity_search(query, k=self.top_k)
+        seen = set()
+        ranked = []
+        for doc in docs:
+            child_id = doc.metadata.get("chunk_id")
+            if child_id and child_id not in seen:
+                seen.add(child_id)
+                ranked.append(child_id)
+        return ranked[:self.top_k]
+
+    def _bm25_child_ids(self, query: str) -> List[str]:
+        if not self.bm25 or not self.child_ids:
+            return []
+        scores = self.bm25.get_scores(self._bm25_tokenize(query))
+        ranked_indices = sorted(range(len(scores)), key=lambda idx: scores[idx], reverse=True)
+        return [self.child_ids[idx] for idx in ranked_indices[:self.top_k]]
+
+    def _rank_child_ids(self, query: str) -> List[str]:
+        if self.retrieval_mode == "dense":
+            return self._dense_child_ids(query)
+
+        if self.retrieval_mode == "bm25":
+            bm25_ids = self._bm25_child_ids(query)
+            return bm25_ids if bm25_ids else self._dense_child_ids(query)
+
+        dense_ids = self._dense_child_ids(query)
+        bm25_ids = self._bm25_child_ids(query)
+
+        if not bm25_ids:
+            return dense_ids
+
+        scores = {}
+        for rank, child_id in enumerate(dense_ids, start=1):
+            scores[child_id] = scores.get(child_id, 0.0) + self.dense_weight / (self.rrf_k + rank)
+        for rank, child_id in enumerate(bm25_ids, start=1):
+            scores[child_id] = scores.get(child_id, 0.0) + self.bm25_weight / (self.rrf_k + rank)
+
+        ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+        return [child_id for child_id, _ in ranked[:self.top_k]]
     
     def get_relevant_documents(self, query: str):
         """
@@ -1082,17 +1191,16 @@ class HierarchicalRetriever:
         Returns:
             List of parent documents only (children used only for ranking)
         """
-        # Step 1: Search for child chunks (for ranking/precision)
-        child_docs = self.vectordb.similarity_search(query, k=self.top_k)
+        # Step 1: Rank child chunks (dense / bm25 / hybrid)
+        ranked_child_ids = self._rank_child_ids(query)
         
         expanded_docs = []
         seen_parents = set()
         total_tokens = 0
         
         # Step 2: Map children to parents and add ONLY parents
-        for child_doc in child_docs:
-            child_id = child_doc.metadata.get('chunk_id')
-            direct_parent_id = child_doc.metadata.get('parent_id')
+        for child_id in ranked_child_ids:
+            direct_parent_id = self.child_id_to_parent.get(child_id)
 
             candidate_parent_ids = []
             if child_id and child_id in self.child_to_parents:

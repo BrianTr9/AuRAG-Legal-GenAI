@@ -18,7 +18,7 @@ Usage:
         --system sphr \
         --top-k 5 \
         --rebuild-index \
-        --disable-context-budget
+        --retrieval-mode hybrid
 
     # Flat baseline
     python3 evaluation/evaluate_retrieval.py \
@@ -27,7 +27,7 @@ Usage:
         --system flat \
         --top-k 5 \
         --rebuild-index \
-        --disable-context-budget
+        --retrieval-mode hybrid
 
     # Fast smoke test (10 queries)
     python3 evaluation/evaluate_retrieval.py \
@@ -39,6 +39,7 @@ import json
 import random
 import shutil
 import math
+import re
 from pathlib import Path
 from typing import Dict, List, Any
 from statistics import mean, stdev
@@ -47,6 +48,7 @@ import xml.etree.ElementTree as ET
 from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
+from rank_bm25 import BM25Okapi
 
 # Add src/ to path to import AuRAG modules
 import sys
@@ -115,6 +117,8 @@ def chunk_flat(text: str, contract_id: str, chunk_size: int = 300, overlap: int 
     chunks = []
     step = max(chunk_size - overlap, 1)
 
+    chunk_idx = 0
+
     if tiktoken is not None:
         encoding = tiktoken.get_encoding("cl100k_base")
         tokens = encoding.encode(text)
@@ -128,8 +132,10 @@ def chunk_flat(text: str, contract_id: str, chunk_size: int = 300, overlap: int 
                 metadata={
                     'chunk_type': 'flat',
                     'contract_id': contract_id,
+                    'chunk_id': f"{contract_id}_flat_{chunk_idx}",
                 }
             ))
+            chunk_idx += 1
         return chunks
 
     # Fallback: word-based chunking if tokenizer is unavailable
@@ -146,9 +152,107 @@ def chunk_flat(text: str, contract_id: str, chunk_size: int = 300, overlap: int 
             metadata={
                 'chunk_type': 'flat',
                 'contract_id': contract_id,
+                'chunk_id': f"{contract_id}_flat_{chunk_idx}",
             }
         ))
+        chunk_idx += 1
     return chunks
+
+
+class FlatRetriever:
+    """Flat retriever with dense/bm25/hybrid ranking on flat chunks."""
+
+    def __init__(
+        self,
+        vectordb,
+        flat_documents: List[Document],
+        top_k: int = 5,
+        retrieval_mode: str = 'dense',
+        bm25_weight: float = 0.5,
+        rrf_k: int = 60,
+    ):
+        self.vectordb = vectordb
+        self.top_k = top_k
+        self.retrieval_mode = retrieval_mode.lower()
+        self.bm25_weight = max(0.0, min(1.0, bm25_weight))
+        self.dense_weight = 1.0 - self.bm25_weight
+        self.rrf_k = max(1, int(rrf_k))
+
+        if self.retrieval_mode not in {'dense', 'hybrid'}:
+            raise ValueError(
+                f"Invalid retrieval_mode='{retrieval_mode}'. Choose from: dense, hybrid"
+            )
+
+        self.chunk_id_to_doc: Dict[str, Document] = {}
+        self.chunk_ids: List[str] = []
+        for doc in flat_documents:
+            chunk_id = doc.metadata.get('chunk_id')
+            if not chunk_id:
+                continue
+            if chunk_id not in self.chunk_id_to_doc:
+                self.chunk_id_to_doc[chunk_id] = doc
+                self.chunk_ids.append(chunk_id)
+
+        tokenized = [self._bm25_tokenize(self.chunk_id_to_doc[cid].page_content) for cid in self.chunk_ids]
+        self.bm25 = BM25Okapi(tokenized) if tokenized else None
+
+    @staticmethod
+    def _bm25_tokenize(text: str) -> List[str]:
+        if not text:
+            return []
+
+        s = str(text).lower()
+        tokens: List[str] = re.findall(r"[a-z0-9]+(?:-[a-z0-9]+)?", s)
+
+        cjk_spans = re.findall(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]+", s)
+        for span in cjk_spans:
+            if len(span) == 1:
+                tokens.append(span)
+            else:
+                tokens.extend(span[i:i+2] for i in range(len(span) - 1))
+
+        return tokens
+
+    def _dense_chunk_ids(self, query: str) -> List[str]:
+        docs = self.vectordb.similarity_search(query, k=self.top_k)
+        seen = set()
+        ranked = []
+        for doc in docs:
+            chunk_id = doc.metadata.get('chunk_id')
+            if chunk_id and chunk_id not in seen:
+                seen.add(chunk_id)
+                ranked.append(chunk_id)
+        return ranked[:self.top_k]
+
+    def _bm25_chunk_ids(self, query: str) -> List[str]:
+        if not self.bm25:
+            return []
+        scores = self.bm25.get_scores(self._bm25_tokenize(query))
+        ranked_indices = sorted(range(len(scores)), key=lambda idx: scores[idx], reverse=True)
+        return [self.chunk_ids[idx] for idx in ranked_indices[:self.top_k]]
+
+    def _rank_chunk_ids(self, query: str) -> List[str]:
+        if self.retrieval_mode == 'dense':
+            return self._dense_chunk_ids(query)
+
+        dense_ids = self._dense_chunk_ids(query)
+        bm25_ids = self._bm25_chunk_ids(query)
+
+        if not bm25_ids:
+            return dense_ids
+
+        scores: Dict[str, float] = {}
+        for rank, chunk_id in enumerate(dense_ids, start=1):
+            scores[chunk_id] = scores.get(chunk_id, 0.0) + self.dense_weight / (self.rrf_k + rank)
+        for rank, chunk_id in enumerate(bm25_ids, start=1):
+            scores[chunk_id] = scores.get(chunk_id, 0.0) + self.bm25_weight / (self.rrf_k + rank)
+
+        ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+        return [chunk_id for chunk_id, _ in ranked[:self.top_k]]
+
+    def invoke(self, query: str) -> List[Document]:
+        ranked_ids = self._rank_chunk_ids(query)
+        return [self.chunk_id_to_doc[cid] for cid in ranked_ids if cid in self.chunk_id_to_doc]
 
 
 def build_sphr_index(
@@ -161,7 +265,10 @@ def build_sphr_index(
     persist_dir: Path,
     device: str,
     normalize_embeddings: bool,
-    rebuild_index: bool
+    rebuild_index: bool,
+    retrieval_mode: str,
+    bm25_weight: float,
+    rrf_k: int,
 ):
     """Build SPHR index and retriever."""
     chunker = HierarchicalChunker(child_size=child_chunk_size, child_overlap=child_chunk_overlap)
@@ -225,7 +332,10 @@ def build_sphr_index(
         all_parent_chunks,
         parent_to_children,
         top_k=top_k,
-        context_budget=context_budget
+        context_budget=context_budget,
+        retrieval_mode=retrieval_mode,
+        bm25_weight=bm25_weight,
+        rrf_k=rrf_k,
     )
 
     return retriever
@@ -236,6 +346,10 @@ def build_flat_index(
     embedding_model: str,
     chunk_size: int,
     overlap: int,
+    top_k: int,
+    retrieval_mode: str,
+    bm25_weight: float,
+    rrf_k: int,
     persist_dir: Path,
     device: str,
     normalize_embeddings: bool,
@@ -263,7 +377,14 @@ def build_flat_index(
         persist_directory=str(persist_dir)
     )
 
-    return vectordb
+    return FlatRetriever(
+        vectordb=vectordb,
+        flat_documents=documents,
+        top_k=top_k,
+        retrieval_mode=retrieval_mode,
+        bm25_weight=bm25_weight,
+        rrf_k=rrf_k,
+    )
 
 
 def calculate_retrieval_metrics(retrieved: List[str], relevant: List[str]) -> Dict[str, float]:
@@ -321,10 +442,10 @@ def main():
     parser.add_argument('--no-normalize-embeddings', action='store_false', dest='normalize_embeddings')
     parser.add_argument('--child-chunk-size', type=int, default=300)
     parser.add_argument('--child-chunk-overlap', type=int, default=90)
-    parser.add_argument('--context-budget', type=int, default=12000)
-    parser.add_argument('--disable-context-budget', action='store_true', default=False)
+    parser.add_argument('--retrieval-mode', type=str, default='dense', choices=['dense', 'hybrid'])
+    parser.add_argument('--bm25-weight', type=float, default=0.5)
+    parser.add_argument('--rrf-k', type=int, default=60)
     parser.add_argument('--rebuild-index', action='store_true', default=False)
-    parser.add_argument('--oversample-multiplier', type=int, default=5)
     parser.add_argument('--sample-queries', type=int, default=0)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--output', type=str, default='')
@@ -345,10 +466,8 @@ def main():
 
     output_dir = Path(__file__).parent
 
-    # Build index
-    context_budget = args.context_budget
-    if args.disable_context_budget:
-        context_budget = 10**9
+    # Retrieval-only evaluation: always disable context truncation to isolate ranking quality.
+    context_budget = 10**9
     if args.system == 'sphr':
         retriever = build_sphr_index(
             corpus,
@@ -360,14 +479,21 @@ def main():
             output_dir / 'vector_db_sphr',
             args.device,
             args.normalize_embeddings,
-            args.rebuild_index
+            args.rebuild_index,
+            args.retrieval_mode,
+            args.bm25_weight,
+            args.rrf_k,
         )
     else:
-        vectordb = build_flat_index(
+        retriever = build_flat_index(
             corpus,
             args.embedding,
             args.child_chunk_size,
             args.child_chunk_overlap,
+            args.top_k,
+            args.retrieval_mode,
+            args.bm25_weight,
+            args.rrf_k,
             output_dir / 'vector_db_flat',
             args.device,
             args.normalize_embeddings,
@@ -377,27 +503,20 @@ def main():
     per_query_results = []
     hit_scores, prec_scores, rec_scores, f1_scores, mrr_scores, ndcg_scores = [], [], [], [], [], []
 
-    def collect_unique_articles(docs: List[Document], top_k: int) -> List[str]:
+    def collect_unique_articles(docs: List[Document]) -> List[str]:
         retrieved = []
         for d in docs:
             doc_id = d.metadata.get('contract_id', 'unknown')
             if doc_id not in retrieved:
                 retrieved.append(doc_id)
-            if len(retrieved) >= top_k:
-                break
         return retrieved
 
     for q in queries:
         question = q['question']
         relevant = q['relevant_articles']
 
-        if args.system == 'sphr':
-            docs = retriever.invoke(question)
-            retrieved = collect_unique_articles(docs, args.top_k)
-        else:
-            oversample_k = max(args.top_k * args.oversample_multiplier, args.top_k)
-            docs = vectordb.similarity_search(question, k=oversample_k)
-            retrieved = collect_unique_articles(docs, args.top_k)
+        docs = retriever.invoke(question)
+        retrieved = collect_unique_articles(docs)
 
         metrics = calculate_retrieval_metrics(retrieved, relevant)
         hit_scores.append(metrics['hit@k'])
@@ -432,11 +551,12 @@ def main():
             'child_chunk_size': args.child_chunk_size,
             'child_chunk_overlap': args.child_chunk_overlap,
             'context_budget': context_budget,
-            'disable_context_budget': args.disable_context_budget,
+            'retrieval_mode': args.retrieval_mode,
+            'bm25_weight': args.bm25_weight,
+            'rrf_k': args.rrf_k,
             'device': args.device,
             'normalize_embeddings': args.normalize_embeddings,
             'rebuild_index': args.rebuild_index,
-            'oversample_multiplier': args.oversample_multiplier,
             'seed': args.seed
         },
         'aggregate_metrics': aggregate,
