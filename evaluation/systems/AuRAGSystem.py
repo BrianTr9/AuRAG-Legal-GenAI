@@ -83,6 +83,9 @@ class AuRAGSystem(RAGSystem):
         child_chunk_overlap = kwargs.get('child_chunk_overlap', 90)
         self.top_k = kwargs.get('top_k', 5)
         self.context_budget = kwargs.get('context_budget', 12000)
+        self.retrieval_mode = kwargs.get('retrieval_mode', 'dense')
+        self.bm25_weight = kwargs.get('bm25_weight', 0.5)
+        self.rrf_k = kwargs.get('rrf_k', 60)
         rebuild_index = kwargs.get('rebuild_index', False)
         n_ctx = kwargs.get('n_ctx', 16384)
         n_gpu_layers = kwargs.get('n_gpu_layers', -1)
@@ -92,6 +95,10 @@ class AuRAGSystem(RAGSystem):
         print(f"  - Child chunk overlap: {child_chunk_overlap}")
         print(f"  - Top-K retrieval: {self.top_k}")
         print(f"  - Context budget: {self.context_budget} tokens")
+        print(f"  - Retrieval mode: {self.retrieval_mode}")
+        if self.retrieval_mode == 'hybrid':
+            print(f"  - BM25 weight: {self.bm25_weight}")
+            print(f"  - RRF-k: {self.rrf_k}")
         print(f"  - Model context: {n_ctx} tokens")
         print(f"  - GPU layers: {n_gpu_layers}")
         print(f"  - Rebuild index: {rebuild_index}")
@@ -191,7 +198,10 @@ class AuRAGSystem(RAGSystem):
             all_parent_chunks,
             parent_to_children,
             top_k=self.top_k,
-            context_budget=self.context_budget
+            context_budget=self.context_budget,
+            retrieval_mode=self.retrieval_mode,
+            bm25_weight=self.bm25_weight,
+            rrf_k=self.rrf_k,
         )
         print(f"  ✓ Retriever ready")
         
@@ -331,6 +341,9 @@ class AuRAGSystem(RAGSystem):
             'llm_model': self.rdg_config.get('model_path', 'unknown'),
             'top_k': self.top_k,
             'context_budget': self.context_budget,
+            'retrieval_mode': self.retrieval_mode,
+            'bm25_weight': self.bm25_weight,
+            'rrf_k': self.rrf_k,
             'num_queries_processed': len(self.retrieval_times),
             'avg_retrieval_time': sum(self.retrieval_times) / len(self.retrieval_times) if self.retrieval_times else 0,
             'avg_generation_time': sum(self.generation_times) / len(self.generation_times) if self.generation_times else 0

@@ -248,6 +248,10 @@ def calculate_citation_metrics(
         len(misattributed_citations) / len(validly_retrieved_citations)
         if len(validly_retrieved_citations) > 0 else 0.0
     )
+    misattribution_rate = (
+        len(misattributed_citations) / len(cited_set)
+        if len(cited_set) > 0 else 0.0
+    )
 
     # SECONDARY METRIC: Citation Precision (SEMANTIC CHECK)
     # Definition: What percentage of citations are actually relevant (correct)?
@@ -263,7 +267,9 @@ def calculate_citation_metrics(
     return {
         'citation_hallucination_rate': hallucination_rate,  # Core thesis metric (Fabrication/Type 1)
         'fabrication_rate': hallucination_rate,             # Explicit alias for Type 1
+        'misattribution_rate': misattribution_rate,         # Type 2 overall (normalized by |C|)
         'misattribution_rate_conditional': misattribution_rate_conditional,  # Type 2 conditioned on |C ∩ R|
+        'non_gt_citation_rate': misattribution_rate,        # Alias
         
         'citation_precision': citation_precision,
         'citation_recall': citation_recall,
@@ -586,6 +592,12 @@ def main():
     # Evaluation parameters
     parser.add_argument('--top-k', type=int, default=5,
                        help='Number of documents to retrieve')
+    parser.add_argument('--retrieval-mode', type=str, default='dense', choices=['dense', 'hybrid'],
+                       help='Layer-1 retrieval strategy for end-to-end runs')
+    parser.add_argument('--bm25-weight', type=float, default=0.5,
+                       help='BM25 weight in weighted-RRF when retrieval-mode=hybrid')
+    parser.add_argument('--rrf-k', type=int, default=60,
+                       help='RRF constant (larger = flatter rank decay)')
     parser.add_argument('--sample-queries', type=int, default=None,
                        help='Limit to first N queries (for testing)')
     parser.add_argument('--rebuild-index', action='store_true',
@@ -630,6 +642,10 @@ def main():
     print(f"Embedding: {embedding_model}")
     print(f"LLM: {args.llm_model}")
     print(f"Top-K: {args.top_k}")
+    print(f"Retrieval Mode: {args.retrieval_mode}")
+    if args.retrieval_mode == 'hybrid':
+        print(f"BM25 Weight: {args.bm25_weight}")
+        print(f"RRF-k: {args.rrf_k}")
     if args.sample_queries:
         print(f"Sample Size: {args.sample_queries} queries")
     
@@ -648,6 +664,9 @@ def main():
             child_chunk_size=300,
             child_chunk_overlap=90,
             context_budget=12000,
+            retrieval_mode=args.retrieval_mode,
+            bm25_weight=args.bm25_weight,
+            rrf_k=args.rrf_k,
             n_ctx=16384,
             n_gpu_layers=-1
         )
