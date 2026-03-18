@@ -101,20 +101,36 @@ class Citation:
 
 @dataclass
 class ReasoningStep:
-    statement: str
-    citations: List[str] = field(default_factory=list)
+    extracted_snippet: str
+    deduction: str 
     step_type: str = "inference"
+    citations: List[str] = field(default_factory=list)
     
     def to_dict(self) -> Dict[str, Any]:
-        return {"statement": self.statement, "citations": self.citations, "type": self.step_type}
+        return {
+            "extracted_snippet": self.extracted_snippet,
+            "deduction": self.deduction,
+            "type": self.step_type,
+            "citations": self.citations
+        }
     
     @staticmethod
     def from_dict(data: Dict) -> 'ReasoningStep':
-        if not isinstance(data, dict): return ReasoningStep(str(data))
+        if not isinstance(data, dict): 
+            # Fallback for legacy string format or non-dict input
+            return ReasoningStep(extracted_snippet="", deduction=str(data))
+        
+        # Handle backward compatibility if "statement" exists but new fields don't
+        snippet = data.get("extracted_snippet", "")
+        deduction = data.get("deduction", "")
+        if "statement" in data and not snippet and not deduction:
+            deduction = data["statement"]
+
         return ReasoningStep(
-            statement=data.get("statement", ""),
-            citations=data.get("citations", []),
-            step_type=data.get("type", "inference")
+            extracted_snippet=snippet,
+            deduction=deduction,
+            step_type=data.get("type", "inference"),
+            citations=data.get("citations", [])
         )
 
 @dataclass
@@ -188,14 +204,15 @@ class GBNFGrammarBuilder:
 
         answer_rule = "string" if answer_mode == "freeform" else "yn-string"
         
-        # Streamlined Grammar: Reasoning -> Answer (citations auto-collected from reasoning)
+        # Streamlined Grammar: Snippet -> Deduction -> Type -> Citations
+        # Enforces Mechanical Grounding before Logical Deduction
         return f'''
 root ::= "{{" ws reasoning-field ws "," ws answer-field ws "}}"
 
 reasoning-field ::= "\\"reasoning\\"" ws ":" ws reasoning-object
 reasoning-object ::= "{{" ws "\\"steps\\"" ws ":" ws steps-array ws "}}"
 steps-array ::= "[]" | "[" ws reasoning-step (ws "," ws reasoning-step)* ws "]"
-reasoning-step ::= "{{" ws "\\"statement\\"" ws ":" ws string ws "," ws "\\"citations\\"" ws ":" ws short-citation-list ws "," ws "\\"type\\"" ws ":" ws step-type ws "}}"
+reasoning-step ::= "{{" ws "\\"extracted_snippet\\"" ws ":" ws string ws "," ws "\\"deduction\\"" ws ":" ws string ws "," ws "\\"type\\"" ws ":" ws step-type ws "," ws "\\"citations\\"" ws ":" ws short-citation-list ws "}}"
 
 short-citation-list ::= "[]" | "[" ws short-citation (ws "," ws short-citation)* ws "]"
 short-citation ::= {short_enum}
@@ -278,7 +295,11 @@ You are a systematic reasoning assistant. Answer based ONLY on the provided cont
 
 RULES:
 1. Every factual claim must cite a source from VALID_CITATIONS.
-2. Use step-by-step reasoning: premise (context fact) → inference (logical deduction) → conclusion.
+2. Use step-by-step reasoning: 
+   - extracted_snippet: COPY exact text from context.
+   - deduction: Logical inference based on the snippet.
+   - type: premise/inference/conclusion.
+   - citations: Source ID.
 3. If context is insufficient, state this explicitly.
 4. Do NOT use external knowledge.
 {task_hint}
@@ -297,16 +318,18 @@ JSON FORMAT:
 {{
   "reasoning": {{
     "steps": [
-      {{ "statement": "Context states X...", "citations": ["doc_0_sec_I"], "type": "premise" }},
-      {{ "statement": "From X, we deduce Y...", "citations": ["doc_0_sec_I"], "type": "inference" }},
-      {{ "statement": "Context states Z...", "citations": ["doc_1_sec_II"], "type": "premise" }},
-      {{ "statement": "Combining Y and Z...", "citations": ["doc_0_sec_I", "doc_1_sec_II"], "type": "conclusion" }}
+      {{ "extracted_snippet": "Exact quote from context...", "deduction": "This implies X...", "type": "premise", "citations": ["doc_0_sec_I"] }},
+      {{ "extracted_snippet": "Another relevant quote...", "deduction": "From X, we deduce Y...", "type": "inference", "citations": ["doc_0_sec_I"] }},
+      {{ "extracted_snippet": "Supporting text...", "deduction": "Context states Z...", "type": "premise", "citations": ["doc_1_sec_II"] }},
+      {{ "extracted_snippet": "", "deduction": "Combining Y and Z to conclude...", "type": "conclusion", "citations": ["doc_0_sec_I", "doc_1_sec_II"] }}
     ]
   }},
     "answer": "{json_example_answer}"
 }}
 
 NOTE: 
+- "extracted_snippet": MUST be a verbatim copy of a relevant sentence from CONTEXT.
+- "deduction": Logic explaining why this snippet matters.
 - Use SHORT citation IDs (e.g., "doc_0_sec_I") in reasoning steps.
 - Final citations list will be auto-generated from your reasoning steps.
 
