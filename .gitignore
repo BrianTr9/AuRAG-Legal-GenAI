@@ -21,6 +21,8 @@ evaluation/*
 !evaluation/systems/
 !evaluation/*.py
 
+notebooks/
+
 *.gguf
 *.json
 
