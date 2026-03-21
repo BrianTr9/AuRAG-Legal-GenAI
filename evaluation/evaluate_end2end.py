@@ -344,6 +344,8 @@ def evaluate_rag_system(
     retrieval_times = []
     generation_times = []
     total_times = []
+    hallucination_num_used = 0
+    precision_num_used = 0
     
     for i, query_data in enumerate(queries, 1):
         query_id = query_data['query_id']
@@ -364,10 +366,11 @@ def evaluate_rag_system(
         answer = result.get('answer', '')
         citations = result.get('citations', [])
         retrieved = result.get('retrieved', [])
+        json_parse_success = int(result.get('json_parse_success', 1))
         retrieval_time = result.get('retrieval_time', 0.0)
         generation_time = result.get('generation_time', 0.0)
 
-        predicted_label = normalize_yn_answer(answer)
+        predicted_label = normalize_yn_answer(answer) if json_parse_success == 1 else None
         gt_label = (ground_truth or 'N').strip().upper()
         
         # FIX: If the model fails to output a parsable answer, it counts as wrong (0)
@@ -398,14 +401,16 @@ def evaluate_rag_system(
         print(f"  Time: {total_time:.2f}s (retrieval: {retrieval_time:.2f}s, generation: {generation_time:.2f}s)")
         
         # Aggregate logic
-        # For rates defined OVER the generated citations (Precision, Hallucination, Misattribution),
-        # appending when `num_citations == 0` introduces mathematical artifacts. 
-        # For example, `hallucination_rate = 0` when `num_citations = 0` artificially improves the score!
-        if metrics['num_citations'] > 0:
+        # - Hallucination is conditional on structured parse success.
+        # - Precision/Recall are query-level and averaged across all queries.
+        if json_parse_success == 1:
             hallucination_rates.append(metrics['citation_hallucination_rate'])
+            hallucination_num_used += 1
             misattribution_rates.append(metrics['misattribution_rate'])
-            citation_precisions.append(metrics['citation_precision'])
-            
+
+        citation_precisions.append(metrics['citation_precision'])
+        precision_num_used += 1
+
         if metrics['num_valid_retrieved_citations'] > 0:
             misattribution_rates_conditional.append(metrics['misattribution_rate_conditional'])
 
@@ -432,6 +437,7 @@ def evaluate_rag_system(
             'system_answer': answer,
             'predicted_answer': predicted_label,
             'answer_correct': is_correct,
+            'json_parse_success': json_parse_success,
             # For easy inspection: make GT vs LLM citations explicit.
             # - GT citations: COLIEE-labeled relevant article numbers (<article> tags)
             # - LLM citations: auto-collected citations from RDG reasoning steps
@@ -457,7 +463,8 @@ def evaluate_rag_system(
             'mean': mean(hallucination_rates) if hallucination_rates else 0.0,
             'std': stdev(hallucination_rates) if len(hallucination_rates) > 1 else 0.0,
             'min': min(hallucination_rates) if hallucination_rates else 0.0,
-            'max': max(hallucination_rates) if hallucination_rates else 0.0
+            'max': max(hallucination_rates) if hallucination_rates else 0.0,
+            'denominator_queries': hallucination_num_used,
         },
         'misattribution_rate': {  # Type 2: Semantic Hallucination
             'mean': mean(misattribution_rates) if misattribution_rates else 0.0,
@@ -475,19 +482,27 @@ def evaluate_rag_system(
             'mean': mean(citation_precisions) if citation_precisions else 0.0,
             'std': stdev(citation_precisions) if len(citation_precisions) > 1 else 0.0,
             'min': min(citation_precisions) if citation_precisions else 0.0,
-            'max': max(citation_precisions) if citation_precisions else 0.0
+            'max': max(citation_precisions) if citation_precisions else 0.0,
+            'denominator_queries': precision_num_used,
         },
         'citation_recall': {
             'mean': mean(citation_recalls) if citation_recalls else 0.0,
             'std': stdev(citation_recalls) if len(citation_recalls) > 1 else 0.0,
             'min': min(citation_recalls) if citation_recalls else 0.0,
-            'max': max(citation_recalls) if citation_recalls else 0.0
+            'max': max(citation_recalls) if citation_recalls else 0.0,
+            'denominator_queries': len(citation_recalls),
         },
         'answer_accuracy': {
             'mean': mean(answer_correctness) if answer_correctness else 0.0,
             'std': stdev(answer_correctness) if len(answer_correctness) > 1 else 0.0,
             'num_scored': len(answer_correctness),
             'num_total': len(queries)
+        },
+        'json_compliance': {
+            'mean': mean([r['json_parse_success'] for r in per_query_results]) if per_query_results else 0.0,
+            'count_success': sum(r['json_parse_success'] for r in per_query_results),
+            'count_fail': len(per_query_results) - sum(r['json_parse_success'] for r in per_query_results),
+            'total': len(per_query_results),
         },
         'answer_coverage': {
             # Fraction of queries where we could confidently parse a Y/N from the model output.

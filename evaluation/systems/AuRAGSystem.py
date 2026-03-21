@@ -287,33 +287,21 @@ class AuRAGSystem(RAGSystem):
             )
             generation_time = time.time() - t1
             self.generation_times.append(generation_time)
+            json_parse_success = 1
+            if structured_output.metadata and 'json_parse_success' in structured_output.metadata:
+                json_parse_success = int(structured_output.metadata['json_parse_success'])
             
-            # Extract citations from structured output
-            # IMPORTANT: These are the "cited" articles used in hallucination check
-            # Citations in reasoning steps are section IDs like "571_sec_571"
-            # We need to extract just the article number (before "_sec_") for comparison
-            # HALLUCINATION = cited article NOT in retrieved_article_ids set
-            cited_article_ids = []
-            if structured_output.reasoning:  # Changed from structured_reasoning to reasoning
-                for step in structured_output.reasoning.steps:
-                    if step.citations:
-                        for citation in step.citations:
-                            # Extract article ID from section ID (e.g., "571_sec_571" → "571")
-                            if '_sec_' in citation:
-                                article_id = citation.split('_sec_')[0]
-                                cited_article_ids.append(article_id)
-                            else:
-                                # Fallback: use citation as-is
-                                cited_article_ids.append(citation)
-            
-            # Deduplicate and sort
-            cited_article_ids = sorted(set(cited_article_ids))
+            # Use collector-derived citations from RDG output as the single source of truth.
+            cited_article_ids = sorted(set(
+                c.contract_id for c in structured_output.citations if c.contract_id and c.contract_id != "Unknown"
+            ))
             
             return {
                 'answer': structured_output.answer,
                 'reasoning': structured_output.to_dict(),  # Changed from to_json() to to_dict()
                 'citations': cited_article_ids,
                 'retrieved': retrieved_article_ids,
+                'json_parse_success': json_parse_success,
                 'retrieval_time': retrieval_time,
                 'generation_time': generation_time
             }
@@ -328,6 +316,7 @@ class AuRAGSystem(RAGSystem):
                 'reasoning': "",
                 'citations': [],
                 'retrieved': retrieved_article_ids,
+                'json_parse_success': 0,
                 'retrieval_time': retrieval_time,
                 'generation_time': generation_time
             }

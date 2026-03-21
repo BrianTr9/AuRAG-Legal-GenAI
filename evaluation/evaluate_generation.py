@@ -37,11 +37,12 @@ from statistics import mean, stdev
 
 from langchain_core.documents import Document
 
-# Add evaluation/ and src/ to path for local imports
+# Add project root and src/ to path for local imports
 import sys
 EVAL_PATH = Path(__file__).parent
+ROOT_PATH = EVAL_PATH.parent
 SRC_PATH = Path(__file__).parent.parent / "src"
-sys.path.insert(0, str(EVAL_PATH))
+sys.path.insert(0, str(ROOT_PATH))
 sys.path.insert(0, str(SRC_PATH))
 
 # Local imports
@@ -57,7 +58,7 @@ from RDG import (
     Citation,
     StructuredReasoning,
     _parse_json_output,
-    _parse_reasoning,
+    collect_validated_citations,
 )
 
 
@@ -139,45 +140,21 @@ def prompt_only_generate(rdg, question: str, documents: List[Document], max_toke
     output_dict = _parse_json_output(raw_text)
     
     if not output_dict:
-        # Fallback for broken JSON
+        # Strict mode: broken JSON is a hard failure.
         return {
-            'answer': raw_text, 
+            'answer': raw_text,
             'reasoning': StructuredReasoning([]),
-            'citations': []
+            'citations': [],
+            'json_parse_success': 0,
         }
-
-    reasoning = _parse_reasoning(output_dict.get('reasoning', ''))
-
-    # COLLECT CITATIONS
-    # We accept tokens that loosely match known document IDs
-    collected_refs = set()
-    
-    # Helper to clean strings
-    def looks_like_ref(text: str) -> bool:
-        return isinstance(text, str) and (len(text) > 0)
-
-    # 1. From Reasoning
-    if isinstance(reasoning, StructuredReasoning) and reasoning.steps:
-        for step in reasoning.steps:
-            for cit in (step.citations or []):
-                if looks_like_ref(cit):
-                    collected_refs.add(cit)
-                    
-    # 2. From Citations field
-    if 'citations' in output_dict and isinstance(output_dict['citations'], list):
-         for cit in output_dict['citations']:
-             if looks_like_ref(cit):
-                 collected_refs.add(cit)
-
-    # Convert strings to Citation objects
-    # Note: We create Citations with the raw string as reference_id
-    # The 'extract_article_ids_from_citations' function will handle the parsing logic.
-    validated_citations = [Citation(ref, "Unknown", "Unknown", ref) for ref in collected_refs]
+    reasoning = StructuredReasoning.from_dict(output_dict.get('reasoning', {}))
+    validated_citations = collect_validated_citations(output_dict, valid_refs_full, citation_mode="short")
 
     return {
         'answer': output_dict.get('answer', ''),
         'reasoning': reasoning,
-        'citations': validated_citations
+        'citations': validated_citations,
+        'json_parse_success': 1,
     }
 
 
@@ -208,6 +185,8 @@ def evaluate_generation(
     citation_recalls = []
     answer_correctness = []
     generation_times = []
+    hallucination_num_used = 0
+    precision_num_used = 0
 
     for i, query_data in enumerate(queries, 1):
         query_id = query_data['query_id']
@@ -227,14 +206,18 @@ def evaluate_generation(
             structured = rdg.generate(question=question, documents=docs, max_tokens=max_tokens, answer_mode="yn")
             answer = structured.answer
             citations = extract_article_ids_from_citations(structured.citations)
+            json_parse_success = 1
+            if structured.metadata and 'json_parse_success' in structured.metadata:
+                json_parse_success = int(structured.metadata['json_parse_success'])
         else:
             baseline = prompt_only_generate(rdg, question, docs, max_tokens=max_tokens, temperature=0.0)
             answer = baseline['answer']
             citations = extract_article_ids_from_citations(baseline['citations'])
+            json_parse_success = int(baseline.get('json_parse_success', 0))
 
         generation_time = time.time() - t_start
 
-        predicted_label = normalize_yn_answer(answer)
+        predicted_label = normalize_yn_answer(answer) if json_parse_success == 1 else None
         gt_label = (ground_truth or 'N').strip().upper()
         is_correct = 1 if predicted_label == gt_label else 0
 
@@ -244,10 +227,14 @@ def evaluate_generation(
         print(f"  Hallucination: {metrics['citation_hallucination_rate']*100:.1f}% | Precision: {metrics['citation_precision']*100:.1f}% | Recall: {metrics['citation_recall']*100:.1f}%")
         print(f"  Time: {generation_time:.2f}s")
 
-        if metrics['num_citations'] > 0:
+        # Query-level metrics: precision/recall are averaged over all queries.
+        # Hallucination is conditioned on successful JSON parsing.
+        if json_parse_success == 1:
             hallucination_rates.append(metrics['citation_hallucination_rate'])
-            citation_precisions.append(metrics['citation_precision'])
-            
+            hallucination_num_used += 1
+
+        citation_precisions.append(metrics['citation_precision'])
+        precision_num_used += 1
         citation_recalls.append(metrics['citation_recall'])
         answer_correctness.append(is_correct)
         generation_times.append(generation_time)
@@ -258,6 +245,7 @@ def evaluate_generation(
             'ground_truth_answer': ground_truth,
             'predicted_answer': predicted_label,
             'answer_correct': is_correct,
+            'json_parse_success': json_parse_success,
             'gt_citations': relevant_articles,
             'llm_citations': citations,
             'hallucination_rate': metrics['citation_hallucination_rate'],
@@ -276,20 +264,29 @@ def evaluate_generation(
         'citation_hallucination_rate': {
             'mean': mean(hallucination_rates) if hallucination_rates else 0.0,
             'std': stdev(hallucination_rates) if len(hallucination_rates) > 1 else 0.0,
+            'denominator_queries': hallucination_num_used,
         },
         'citation_precision': {
             'mean': mean(citation_precisions) if citation_precisions else 0.0,
             'std': stdev(citation_precisions) if len(citation_precisions) > 1 else 0.0,
+            'denominator_queries': precision_num_used,
         },
         'citation_recall': {
             'mean': mean(citation_recalls) if citation_recalls else 0.0,
             'std': stdev(citation_recalls) if len(citation_recalls) > 1 else 0.0,
+            'denominator_queries': len(citation_recalls),
         },
         'answer_accuracy': {
             'mean': mean(answer_correctness) if answer_correctness else 0.0,
             'count_correct': sum(answer_correctness),
             'count_wrong': len(answer_correctness) - sum(answer_correctness),
             'total': len(answer_correctness)
+        },
+        'json_compliance': {
+            'mean': mean([r['json_parse_success'] for r in per_query_results]) if per_query_results else 0.0,
+            'count_success': sum(r['json_parse_success'] for r in per_query_results),
+            'count_fail': len(per_query_results) - sum(r['json_parse_success'] for r in per_query_results),
+            'total': len(per_query_results),
         },
         'generation_time': {
             'mean': mean(generation_times) if generation_times else 0.0,

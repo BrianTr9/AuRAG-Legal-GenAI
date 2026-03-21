@@ -31,6 +31,7 @@ __all__ = [
     'StructuredOutput',
     'GBNFGrammarBuilder',
     'ReferenceExtractor',
+    'collect_validated_citations',
     'RDGPipeline',
     'get_rdg_pipeline',
     'get_rdg_mode',
@@ -252,6 +253,72 @@ def _parse_reasoning(data: Any) -> StructuredReasoning:
     if isinstance(data, str): return StructuredReasoning.from_dict({"steps": [{"statement": data}]})
     return StructuredReasoning([])
 
+
+def _build_short_to_full_ref_map(valid_refs: List[str]) -> Dict[str, List[str]]:
+    short_to_full_refs: Dict[str, List[str]] = {}
+    for ref in valid_refs:
+        short_id = Citation.get_short_id_from_reference(ref)
+        short_to_full_refs.setdefault(short_id, []).append(ref)
+    return short_to_full_refs
+
+
+def collect_validated_citations(
+    output_dict: Dict[str, Any],
+    valid_refs: List[str],
+    citation_mode: Literal["short", "both"] = "short",
+) -> List[Citation]:
+    """Collect citations deterministically from LLM CoT reasoning steps.
+
+    This is the shared collector for both RDG and prompt-only baselines.
+    It maps short IDs used in reasoning steps back to full references from
+    the retrieved context (`valid_refs`) in a stable order.
+
+    Args:
+        output_dict: Parsed JSON output produced by the model.
+        valid_refs: Full references built from retrieved context.
+        citation_mode:
+            - "short": accept only short IDs (e.g., doc_0_sec_I).
+            - "both": accept both short IDs and full references
+              (e.g., doc_0_Section_I_TITLE).
+    """
+    if citation_mode not in ("short", "both"):
+        raise ValueError(f"Unsupported citation_mode: {citation_mode}")
+
+    reasoning = _parse_reasoning(output_dict.get('reasoning', ''))
+    short_to_full_refs = _build_short_to_full_ref_map(valid_refs)
+    valid_full_ref_set = set(valid_refs)
+
+    used_short_ids_in_order: List[str] = []
+    seen_used_short = set()
+
+    if isinstance(reasoning, StructuredReasoning) and reasoning.steps:
+        for step in reasoning.steps:
+            for short_id in (step.citations or []):
+                if not isinstance(short_id, str):
+                    continue
+                short_id = short_id.strip()
+                if not short_id or short_id in seen_used_short:
+                    continue
+                seen_used_short.add(short_id)
+                used_short_ids_in_order.append(short_id)
+
+    full_refs_in_order: List[str] = []
+    seen_full = set()
+    for cit in used_short_ids_in_order:
+        matched_refs: List[str] = []
+        if cit in short_to_full_refs:
+            matched_refs = short_to_full_refs[cit]
+        elif citation_mode == "both" and cit in valid_full_ref_set:
+            matched_refs = [cit]
+
+        for ref in matched_refs:
+            if ref in seen_full:
+                continue
+            seen_full.add(ref)
+            full_refs_in_order.append(ref)
+
+    return [Citation.from_reference_string(ref) for ref in full_refs_in_order]
+
 # ==========================================
 # MAIN PIPELINE
 # ==========================================
@@ -385,47 +452,22 @@ NOTE:
         # 4. Parse & Validate
         output_dict = _parse_json_output(raw_text)
         if not output_dict:
-            return StructuredOutput([], StructuredReasoning([]), raw_text)
+            return StructuredOutput(
+                citations=[],
+                reasoning=StructuredReasoning([]),
+                answer=raw_text,
+                metadata={"json_parse_success": 0},
+            )
 
         # Basic validation
         reasoning = _parse_reasoning(output_dict.get('reasoning', ''))
-
-        # --- LOGIC: Auto-collect final citations from reasoning ---
-        # Goal: avoid omission when the model uses a short_id in reasoning but forgets to include
-        # the corresponding full reference in the top-level "citations" list.
-        #
-        # We build a mapping short_id -> full reference(s) derived from valid_refs, then
-        # reconstruct the final citations list in a stable, deterministic order.
-        short_to_full_refs: Dict[str, List[str]] = {}
-        for ref in valid_refs:
-            short_id = Citation.get_short_id_from_reference(ref)
-            short_to_full_refs.setdefault(short_id, []).append(ref)
-
-        used_short_ids_in_order: List[str] = []
-        seen_used_short = set()
-        if isinstance(reasoning, StructuredReasoning) and reasoning.steps:
-            for step in reasoning.steps:
-                for short_id in (step.citations or []):
-                    if short_id in seen_used_short:
-                        continue
-                    seen_used_short.add(short_id)
-                    used_short_ids_in_order.append(short_id)
-
-        full_refs_in_order: List[str] = []
-        seen_full = set()
-        for short_id in used_short_ids_in_order:
-            for ref in short_to_full_refs.get(short_id, []):
-                if ref in seen_full:
-                    continue
-                seen_full.add(ref)
-                full_refs_in_order.append(ref)
-
-        validated_citations = [Citation.from_reference_string(ref) for ref in full_refs_in_order]
+        validated_citations = collect_validated_citations(output_dict, valid_refs)
 
         return StructuredOutput(
             citations=validated_citations,
             reasoning=reasoning,
-            answer=output_dict.get('answer', '')
+            answer=output_dict.get('answer', ''),
+            metadata={"json_parse_success": 1},
         )
 
 # ==========================================
