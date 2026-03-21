@@ -26,57 +26,52 @@ from systems.AuRAGSystem import AuRAGSystem
 
 
 def normalize_yn_answer(text: str) -> str | None:
-    """Normalize a free-form model answer to a COLIEE-style label: 'Y' or 'N'.
+    """Normalize a model answer to a COLIEE-style label: 'Y' or 'N'.
 
+    Since RDG guarantees exact 'Y' or 'N' output, this function is primarily 
+    a strict filter that matches 'Y', 'N', 'Yes', 'No' exactly or as complete words.
+    
     Returns:
-        'Y' if the text clearly indicates entailment/yes/true,
-        'N' if the text clearly indicates non-entailment/no/false,
+        'Y' if the text strictly means yes,
+        'N' if the text strictly means no,
         None if ambiguous.
-
-    Notes:
-        - We prefer explicit leading labels like "Y" / "N".
-        - Supports common English and Japanese variants.
-        - This is intentionally conservative: if both signals appear, returns None.
     """
     if not text:
         return None
 
-    s = " ".join(str(text).strip().split()).lower()
+    s = text.strip()
     if not s:
         return None
+        
+    s_upper = s.upper()
 
-    # Strong signal: starts with a label
-    # e.g., "Y", "N", "Y:", "Answer: Y"
-    prefixes_y = ("y", "yes", "entails", "entailed", "entailment", "true")
-    prefixes_n = ("n", "no", "not entail", "non-entail", "contradict", "false")
-    for p in ("answer:", "label:", "prediction:"):
-        if s.startswith(p):
-            s = s[len(p):].lstrip()
-            break
-    if s.startswith("y") and (len(s) == 1 or s[1] in ": )].,;"):
+    # Exact match (Standard RDG mode)
+    if s_upper in ["Y", "N", "YES", "NO"]:
+        return s_upper[0]
+        
+    # Check start of string in case there's punctuation or standard baseline output
+    # e.g., "Y.", "N,", "Yes ", "No\n"
+    import re
+    if re.match(r'^(Y|YES)[^a-zA-Z0-9]', s_upper):
         return "Y"
-    if s.startswith("n") and (len(s) == 1 or s[1] in ": )].,;"):
+    if re.match(r'^(N|NO)[^a-zA-Z0-9]', s_upper):
         return "N"
 
-    # Token-based heuristics
-    y_markers = {
-        "yes", "y", "entailed", "entails", "entailment", "true", "correct", "supported",
-        "is entailed", "is supported",
-        "はい", "該当", "成立", "認められる",
-    }
-    n_markers = {
-        "no", "n", "not", "not entailed", "non-entailment", "contradiction", "false", "incorrect", "unsupported",
-        "is not entailed", "is not supported",
-        "いいえ", "非該当", "成立しない", "認められない",
-    }
+    # Allow matches like "Answer: Y"
+    s_lower = s.lower()
+    for p in ("answer:", "label:", "prediction:", "decision:"):
+        if p in s_lower:
+            idx = s_lower.rfind(p) + len(p)
+            remainder = s_lower[idx:].strip().upper()
+            if remainder in ("Y", "YES") or re.match(r'^(Y|YES)[^a-zA-Z0-9]', remainder):
+                return "Y"
+            if remainder in ("N", "NO") or re.match(r'^(N|NO)[^a-zA-Z0-9]', remainder):
+                return "N"
 
-    has_y = any(m in s for m in y_markers)
-    has_n = any(m in s for m in n_markers)
+    # Common exact mappings for Japanese baselines just in case
+    if s == "はい" or s.startswith("はい"): return "Y"
+    if s == "いいえ" or s.startswith("いいえ"): return "N"
 
-    if has_y and not has_n:
-        return "Y"
-    if has_n and not has_y:
-        return "N"
     return None
 
 
@@ -374,11 +369,11 @@ def evaluate_rag_system(
 
         predicted_label = normalize_yn_answer(answer)
         gt_label = (ground_truth or 'N').strip().upper()
-        is_correct: int | None
-        if predicted_label is None:
-            is_correct = None
-        else:
-            is_correct = 1 if predicted_label == gt_label else 0
+        
+        # FIX: If the model fails to output a parsable answer, it counts as wrong (0)
+        # Previous logic ignored `None`, artificially inflating accuracy for bad baselines.
+        is_correct = 1 if predicted_label == gt_label else 0
+        is_parsed = 1 if predicted_label is not None else 0
         
         print(f"  Retrieved: {len(retrieved)} articles")
         print(f"  Citations: {len(citations)} articles")
@@ -402,20 +397,29 @@ def evaluate_rag_system(
         print(f"  LLM: {llm_list}")
         print(f"  Time: {total_time:.2f}s (retrieval: {retrieval_time:.2f}s, generation: {generation_time:.2f}s)")
         
-        # Aggregate
-        hallucination_rates.append(metrics['citation_hallucination_rate'])
-        misattribution_rates.append(metrics['misattribution_rate'])
-        misattribution_rates_conditional.append(metrics['misattribution_rate_conditional'])
-        citation_precisions.append(metrics['citation_precision'])
+        # Aggregate logic
+        # For rates defined OVER the generated citations (Precision, Hallucination, Misattribution),
+        # appending when `num_citations == 0` introduces mathematical artifacts. 
+        # For example, `hallucination_rate = 0` when `num_citations = 0` artificially improves the score!
+        if metrics['num_citations'] > 0:
+            hallucination_rates.append(metrics['citation_hallucination_rate'])
+            misattribution_rates.append(metrics['misattribution_rate'])
+            citation_precisions.append(metrics['citation_precision'])
+            
+        if metrics['num_valid_retrieved_citations'] > 0:
+            misattribution_rates_conditional.append(metrics['misattribution_rate_conditional'])
+
+        # Recall is calculated globally across all queries (0 citations = 0% recall, correctly penalizing)
         citation_recalls.append(metrics['citation_recall'])
+        
         retrieval_hits.append(retrieval_metrics['retrieval_hit'])
         retrieval_precisions.append(retrieval_metrics['retrieval_precision'])
         retrieval_recalls.append(retrieval_metrics['retrieval_recall'])
-        if is_correct is not None:
-            answer_correctness.append(is_correct)
-            answer_coverage.append(1)
-        else:
-            answer_coverage.append(0)
+        
+        # Always append to correctness (unparsed = wrong)
+        answer_correctness.append(is_correct)
+        answer_coverage.append(is_parsed)
+        
         retrieval_times.append(retrieval_time)
         generation_times.append(generation_time)
         total_times.append(total_time)
@@ -450,10 +454,10 @@ def evaluate_rag_system(
     # Compute aggregate statistics
     aggregate_metrics = {
         'citation_hallucination_rate': {  # Type 1: Fabrication
-            'mean': mean(hallucination_rates),
+            'mean': mean(hallucination_rates) if hallucination_rates else 0.0,
             'std': stdev(hallucination_rates) if len(hallucination_rates) > 1 else 0.0,
-            'min': min(hallucination_rates),
-            'max': max(hallucination_rates)
+            'min': min(hallucination_rates) if hallucination_rates else 0.0,
+            'max': max(hallucination_rates) if hallucination_rates else 0.0
         },
         'misattribution_rate': {  # Type 2: Semantic Hallucination
             'mean': mean(misattribution_rates) if misattribution_rates else 0.0,
@@ -468,16 +472,16 @@ def evaluate_rag_system(
             'max': max(misattribution_rates_conditional) if misattribution_rates_conditional else 0.0
         },
         'citation_precision': {
-            'mean': mean(citation_precisions),
+            'mean': mean(citation_precisions) if citation_precisions else 0.0,
             'std': stdev(citation_precisions) if len(citation_precisions) > 1 else 0.0,
-            'min': min(citation_precisions),
-            'max': max(citation_precisions)
+            'min': min(citation_precisions) if citation_precisions else 0.0,
+            'max': max(citation_precisions) if citation_precisions else 0.0
         },
         'citation_recall': {
-            'mean': mean(citation_recalls),
+            'mean': mean(citation_recalls) if citation_recalls else 0.0,
             'std': stdev(citation_recalls) if len(citation_recalls) > 1 else 0.0,
-            'min': min(citation_recalls),
-            'max': max(citation_recalls)
+            'min': min(citation_recalls) if citation_recalls else 0.0,
+            'max': max(citation_recalls) if citation_recalls else 0.0
         },
         'answer_accuracy': {
             'mean': mean(answer_correctness) if answer_correctness else 0.0,

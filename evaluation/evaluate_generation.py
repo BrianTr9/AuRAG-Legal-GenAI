@@ -236,19 +236,20 @@ def evaluate_generation(
 
         predicted_label = normalize_yn_answer(answer)
         gt_label = (ground_truth or 'N').strip().upper()
-        is_correct = None if predicted_label is None else (1 if predicted_label == gt_label else 0)
+        is_correct = 1 if predicted_label == gt_label else 0
 
         metrics = calculate_citation_metrics(citations, retrieved, relevant_articles)
         
-        print(f"  Answer: {gt_label} → {predicted_label or '?'} {'✓' if is_correct == 1 else '✗' if is_correct == 0 else ''}")
+        print(f"  Answer: {gt_label} → {predicted_label or '?'} {'✓' if is_correct == 1 else '✗'}")
         print(f"  Hallucination: {metrics['citation_hallucination_rate']*100:.1f}% | Precision: {metrics['citation_precision']*100:.1f}% | Recall: {metrics['citation_recall']*100:.1f}%")
         print(f"  Time: {generation_time:.2f}s")
 
-        hallucination_rates.append(metrics['citation_hallucination_rate'])
-        citation_precisions.append(metrics['citation_precision'])
+        if metrics['num_citations'] > 0:
+            hallucination_rates.append(metrics['citation_hallucination_rate'])
+            citation_precisions.append(metrics['citation_precision'])
+            
         citation_recalls.append(metrics['citation_recall'])
-        if is_correct is not None:
-            answer_correctness.append(is_correct)
+        answer_correctness.append(is_correct)
         generation_times.append(generation_time)
 
         # Store result (minimal necessary fields)
@@ -273,15 +274,15 @@ def evaluate_generation(
 
     aggregate_metrics = {
         'citation_hallucination_rate': {
-            'mean': mean(hallucination_rates),
+            'mean': mean(hallucination_rates) if hallucination_rates else 0.0,
             'std': stdev(hallucination_rates) if len(hallucination_rates) > 1 else 0.0,
         },
         'citation_precision': {
-            'mean': mean(citation_precisions),
+            'mean': mean(citation_precisions) if citation_precisions else 0.0,
             'std': stdev(citation_precisions) if len(citation_precisions) > 1 else 0.0,
         },
         'citation_recall': {
-            'mean': mean(citation_recalls),
+            'mean': mean(citation_recalls) if citation_recalls else 0.0,
             'std': stdev(citation_recalls) if len(citation_recalls) > 1 else 0.0,
         },
         'answer_accuracy': {
