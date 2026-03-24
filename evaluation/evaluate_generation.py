@@ -146,6 +146,7 @@ def prompt_only_generate(rdg, question: str, documents: List[Document], max_toke
             'reasoning': StructuredReasoning([]),
             'citations': [],
             'json_parse_success': 0,
+            'raw_output_text': raw_text,
         }
     reasoning = StructuredReasoning.from_dict(output_dict.get('reasoning', {}))
     validated_citations = collect_validated_citations(output_dict, valid_refs_full, citation_mode="short")
@@ -155,6 +156,7 @@ def prompt_only_generate(rdg, question: str, documents: List[Document], max_toke
         'reasoning': reasoning,
         'citations': validated_citations,
         'json_parse_success': 1,
+        'raw_output_text': raw_text,
     }
 
 
@@ -187,6 +189,7 @@ def evaluate_generation(
     generation_times = []
     hallucination_num_used = 0
     precision_num_used = 0
+    raw_outputs = []
 
     for i, query_data in enumerate(queries, 1):
         query_id = query_data['query_id']
@@ -209,11 +212,15 @@ def evaluate_generation(
             json_parse_success = 1
             if structured.metadata and 'json_parse_success' in structured.metadata:
                 json_parse_success = int(structured.metadata['json_parse_success'])
+            raw_output_text = answer
+            if structured.metadata and 'raw_output_text' in structured.metadata:
+                raw_output_text = str(structured.metadata['raw_output_text'])
         else:
             baseline = prompt_only_generate(rdg, question, docs, max_tokens=max_tokens, temperature=0.0)
             answer = baseline['answer']
             citations = extract_article_ids_from_citations(baseline['citations'])
             json_parse_success = int(baseline.get('json_parse_success', 0))
+            raw_output_text = str(baseline.get('raw_output_text', answer))
 
         generation_time = time.time() - t_start
 
@@ -224,7 +231,11 @@ def evaluate_generation(
         metrics = calculate_citation_metrics(citations, retrieved, relevant_articles)
         
         print(f"  Answer: {gt_label} → {predicted_label or '?'} {'✓' if is_correct == 1 else '✗'}")
-        print(f"  Hallucination: {metrics['citation_hallucination_rate']*100:.1f}% | Precision: {metrics['citation_precision']*100:.1f}% | Recall: {metrics['citation_recall']*100:.1f}%")
+        print(
+            f"  Hallucination: {metrics['citation_hallucination_rate']*100:.1f}% | "
+            f"Precision: {metrics['citation_precision']*100:.1f}% | "
+            f"Recall: {metrics['citation_recall']*100:.1f}%"
+        )
         print(f"  Time: {generation_time:.2f}s")
 
         # Query-level metrics: precision/recall are averaged over all queries.
@@ -259,6 +270,14 @@ def evaluate_generation(
             result_entry['raw_answer'] = answer
 
         per_query_results.append(result_entry)
+        raw_outputs.append({
+            'query_id': query_id,
+            'mode': mode,
+            'json_parse_success': json_parse_success,
+            'ground_truth_answer': ground_truth,
+            'predicted_answer': predicted_label,
+            'raw_output_text': raw_output_text,
+        })
 
     aggregate_metrics = {
         'citation_hallucination_rate': {
@@ -295,7 +314,7 @@ def evaluate_generation(
         }
     }
 
-    return aggregate_metrics, per_query_results
+    return aggregate_metrics, per_query_results, raw_outputs
 
 
 def main():
@@ -320,7 +339,7 @@ def main():
     if args.sample_queries > 0:
         queries = random.sample(queries, min(args.sample_queries, len(queries)))
 
-    aggregate_metrics, per_query_results = evaluate_generation(
+    aggregate_metrics, per_query_results, raw_outputs = evaluate_generation(
         mode=args.mode,
         corpus=corpus,
         queries=queries,
@@ -349,7 +368,28 @@ def main():
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
 
+    raw_output_path = output_path.with_name(f"{output_path.stem}_raw_outputs.json")
+    with open(raw_output_path, 'w', encoding='utf-8') as f:
+        json.dump(
+            {
+                'metadata': output['metadata'],
+                'num_queries': len(raw_outputs),
+                'raw_outputs': raw_outputs,
+            },
+            f,
+            indent=2,
+            ensure_ascii=False,
+        )
+
     print(f"✅ Layer-2 evaluation complete: {output_path}")
+    print(f"📝 Raw LLM outputs saved: {raw_output_path}")
+    
+    print("\n--- Aggregate Metrics ---")
+    print(f"Answer Accuracy: {aggregate_metrics['answer_accuracy']['mean']*100:.2f}%")
+    print(f"Citation Hallucination: {aggregate_metrics['citation_hallucination_rate']['mean']*100:.2f}%")
+    print(f"Citation Precision: {aggregate_metrics['citation_precision']['mean']*100:.2f}%")
+    print(f"Citation Recall: {aggregate_metrics['citation_recall']['mean']*100:.2f}%")
+    print(f"JSON Compliance: {aggregate_metrics['json_compliance']['mean']*100:.2f}%")
 
 
 if __name__ == '__main__':

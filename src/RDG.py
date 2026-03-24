@@ -456,7 +456,10 @@ NOTE:
                 citations=[],
                 reasoning=StructuredReasoning([]),
                 answer=raw_text,
-                metadata={"json_parse_success": 0},
+                metadata={
+                    "json_parse_success": 0,
+                    "raw_output_text": raw_text,
+                },
             )
 
         # Basic validation
@@ -467,7 +470,10 @@ NOTE:
             citations=validated_citations,
             reasoning=reasoning,
             answer=output_dict.get('answer', ''),
-            metadata={"json_parse_success": 1},
+            metadata={
+                "json_parse_success": 1,
+                "raw_output_text": raw_text,
+            },
         )
 
 # ==========================================
