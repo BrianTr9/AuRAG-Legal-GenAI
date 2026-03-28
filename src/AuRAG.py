@@ -337,7 +337,9 @@ def run_cli(pipeline: AuRAGPipeline):
             if result.get('structured_output'):
                 print(f"\n📄 Answer (Grammar-Constrained Decoding):")
                 print("="*60)
-                print(json.dumps(result['structured_output'], indent=2))
+                display_output = dict(result['structured_output'])
+                display_output.pop('metadata', None)
+                print(json.dumps(display_output, indent=2))
                 print("="*60)
             else:
                 print(f"\n📖 Answer: {result['answer']}")
