@@ -26,10 +26,10 @@ from rank_bm25 import BM25Okapi
 try:
     import tiktoken
 except ImportError:
-    print("⚠️  tiktoken not installed. Installing...")
-    import subprocess
-    subprocess.check_call(["pip3", "install", "tiktoken"])
-    import tiktoken
+    raise ImportError(
+        "tiktoken is required for SPHR token-based chunking. "
+        "Install dependencies first (e.g., pip install -r requirements.txt)."
+    )
 
 
 @dataclass
