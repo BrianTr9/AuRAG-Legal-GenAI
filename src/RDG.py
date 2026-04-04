@@ -19,7 +19,7 @@ import re
 import json
 import sys
 import io
-from typing import List, Dict, Optional, Any, Literal
+from typing import List, Dict, Optional, Any, Literal, Tuple
 from dataclasses import dataclass, field
 from langchain_core.documents import Document
 
@@ -479,11 +479,30 @@ NOTE:
 # ==========================================
 # SINGLETON EXPORT
 # ==========================================
-_rdg_instance = None
-def get_rdg_pipeline(model_path: str = None, **kwargs):
-    global _rdg_instance
-    if _rdg_instance: return _rdg_instance
-    _rdg_instance = RDGPipeline(model_path=model_path, **kwargs)
-    return _rdg_instance
+_rdg_instances: Dict[Tuple[str, Tuple[Tuple[str, Any], ...]], RDGPipeline] = {}
 
-def get_rdg_mode() -> str: return 'gcd' if _rdg_instance else 'unknown'
+
+def _to_hashable(value: Any) -> Any:
+    """Best-effort conversion for cache key stability."""
+    try:
+        hash(value)
+        return value
+    except TypeError:
+        return repr(value)
+
+
+def _build_rdg_cache_key(model_path: Optional[str], kwargs: Dict[str, Any]) -> Tuple[str, Tuple[Tuple[str, Any], ...]]:
+    resolved_model_path = os.path.abspath(model_path or DEFAULT_MODEL_PATH)
+    normalized_kwargs = tuple(sorted((k, _to_hashable(v)) for k, v in kwargs.items()))
+    return resolved_model_path, normalized_kwargs
+
+
+def get_rdg_pipeline(model_path: str = None, **kwargs):
+    key = _build_rdg_cache_key(model_path, kwargs)
+    if key in _rdg_instances:
+        return _rdg_instances[key]
+    _rdg_instances[key] = RDGPipeline(model_path=model_path, **kwargs)
+    return _rdg_instances[key]
+
+def get_rdg_mode() -> str:
+    return 'rdg' if _rdg_instances else 'unknown'
