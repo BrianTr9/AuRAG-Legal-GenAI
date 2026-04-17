@@ -89,6 +89,7 @@ class AuRAGSystem(RAGSystem):
         rebuild_index = kwargs.get('rebuild_index', False)
         n_ctx = kwargs.get('n_ctx', 16384)
         n_gpu_layers = kwargs.get('n_gpu_layers', -1)
+        seed = kwargs.get('seed', 42)
         
         print(f"\n📋 Configuration:")
         print(f"  - Child chunk size: {child_chunk_size}")
@@ -101,6 +102,7 @@ class AuRAGSystem(RAGSystem):
             print(f"  - RRF-k: {self.rrf_k}")
         print(f"  - Model context: {n_ctx} tokens")
         print(f"  - GPU layers: {n_gpu_layers}")
+        print(f"  - Seed: {seed}")
         print(f"  - Rebuild index: {rebuild_index}")
         
         # Step 1: Hierarchical chunking (SPHR Layer 1)
@@ -211,7 +213,8 @@ class AuRAGSystem(RAGSystem):
         self.rdg_config = {
             'model_path': llm_model_path,
             'n_ctx': n_ctx,
-            'n_gpu_layers': n_gpu_layers
+            'n_gpu_layers': n_gpu_layers,
+            'seed': seed,
         }
         
         print(f"\n{'='*70}")
@@ -225,7 +228,8 @@ class AuRAGSystem(RAGSystem):
             self.rdg = get_rdg_pipeline(
                 model_path=self.rdg_config['model_path'],
                 n_ctx=self.rdg_config['n_ctx'],
-                n_gpu_layers=self.rdg_config['n_gpu_layers']
+                n_gpu_layers=self.rdg_config['n_gpu_layers'],
+                seed=self.rdg_config['seed'],
             )
             print(f"  ✓ Model loaded")
         return self.rdg

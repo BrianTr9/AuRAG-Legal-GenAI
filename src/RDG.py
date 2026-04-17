@@ -324,10 +324,18 @@ def collect_validated_citations(
 # ==========================================
 
 class RDGPipeline:
-    def __init__(self, model_path: str = None, n_ctx: int = 16384, n_gpu_layers: int = -1, verbose: bool = False):
+    def __init__(
+        self,
+        model_path: str = None,
+        n_ctx: int = 16384,
+        n_gpu_layers: int = -1,
+        verbose: bool = False,
+        seed: int = 42,
+    ):
         if not LLAMA_CPP_AVAILABLE: raise RuntimeError("llama-cpp-python missing")
         
         self.model_path = model_path or DEFAULT_MODEL_PATH
+        self.seed = int(seed)
         if not os.path.exists(self.model_path):
             raise RuntimeError(f"GGUF Model not found at {self.model_path}")
         
@@ -335,13 +343,19 @@ class RDGPipeline:
         try:
             old_stderr = sys.stderr
             sys.stderr = io.StringIO()
-            self.llm = Llama(model_path=self.model_path, n_ctx=n_ctx, n_gpu_layers=n_gpu_layers, verbose=verbose)
+            self.llm = Llama(
+                model_path=self.model_path,
+                n_ctx=n_ctx,
+                n_gpu_layers=n_gpu_layers,
+                verbose=verbose,
+                seed=self.seed,
+            )
         finally:
             sys.stderr = old_stderr
             
         self.grammar_builder = GBNFGrammarBuilder()
         self.extractor = ReferenceExtractor()
-        print(f"✓ Model Loaded (Ctx: {n_ctx})")
+        print(f"✓ Model Loaded (Ctx: {n_ctx}, Seed: {self.seed})")
 
     def _build_prompt(self, question: str, valid_refs: List[str], context_str: str, answer_mode: Literal["freeform", "yn"] = "freeform") -> str:
         refs_display = "\n".join([f"  - {r}" for r in valid_refs])

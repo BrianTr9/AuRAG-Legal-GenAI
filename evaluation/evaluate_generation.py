@@ -168,6 +168,7 @@ def evaluate_generation(
     n_ctx: int,
     n_gpu_layers: int,
     max_tokens: int,
+    seed: int = 42,
     sample_size: int = None,
 ):
     if sample_size:
@@ -179,7 +180,7 @@ def evaluate_generation(
     # Validate Layer 2 setup: retrieved should equal relevant_articles (GT context)
     print(f"✓ Layer 2: Perfect retrieval (GT context isolation)")
 
-    rdg = get_rdg_pipeline(model_path=llm_model_path, n_ctx=n_ctx, n_gpu_layers=n_gpu_layers)
+    rdg = get_rdg_pipeline(model_path=llm_model_path, n_ctx=n_ctx, n_gpu_layers=n_gpu_layers, seed=seed)
 
     per_query_results = []
     hallucination_rates = []
@@ -347,6 +348,7 @@ def main():
         n_ctx=args.n_ctx,
         n_gpu_layers=args.n_gpu_layers,
         max_tokens=args.max_tokens,
+        seed=args.seed,
         sample_size=None
     )
 

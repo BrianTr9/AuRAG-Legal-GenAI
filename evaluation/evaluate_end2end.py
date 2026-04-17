@@ -686,6 +686,7 @@ def main():
             retrieval_mode=args.retrieval_mode,
             bm25_weight=args.bm25_weight,
             rrf_k=args.rrf_k,
+            seed=args.seed,
             n_ctx=16384,
             n_gpu_layers=-1
         )

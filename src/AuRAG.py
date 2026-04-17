@@ -47,6 +47,7 @@ class AuRAGConfig:
     n_gpu_layers: int = -1
     n_ctx: int = 16384
     max_tokens: int = 3072
+    seed: int = 42
     
     # Embeddings
     embedding_model: str = "BAAI/bge-small-en-v1.5"
@@ -248,7 +249,8 @@ class AuRAGPipeline:
         if self.rdg is None:
             self.rdg = get_rdg_pipeline(
                 n_ctx=self.config.n_ctx, 
-                n_gpu_layers=self.config.n_gpu_layers
+                n_gpu_layers=self.config.n_gpu_layers,
+                seed=self.config.seed,
             )
         return self.rdg
     
