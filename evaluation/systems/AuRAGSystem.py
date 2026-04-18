@@ -21,9 +21,12 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 
 from SPHR import HierarchicalChunker, HierarchicalRetriever
-from RDG import get_rdg_pipeline
+from RDG import get_rdg_pipeline, DEFAULT_N_CTX as RDG_DEFAULT_N_CTX
 
 from .base import RAGSystem
+
+
+DEFAULT_N_CTX = RDG_DEFAULT_N_CTX
 
 
 class AuRAGSystem(RAGSystem):
@@ -87,8 +90,9 @@ class AuRAGSystem(RAGSystem):
         self.bm25_weight = kwargs.get('bm25_weight', 0.5)
         self.rrf_k = kwargs.get('rrf_k', 60)
         rebuild_index = kwargs.get('rebuild_index', False)
-        n_ctx = kwargs.get('n_ctx', 16384)
+        n_ctx = kwargs.get('n_ctx', DEFAULT_N_CTX)
         n_gpu_layers = kwargs.get('n_gpu_layers', -1)
+        max_tokens = kwargs.get('max_tokens', None)
         seed = kwargs.get('seed', 42)
         
         print(f"\n📋 Configuration:")
@@ -101,6 +105,7 @@ class AuRAGSystem(RAGSystem):
             print(f"  - BM25 weight: {self.bm25_weight}")
             print(f"  - RRF-k: {self.rrf_k}")
         print(f"  - Model context: {n_ctx} tokens")
+        print(f"  - Generation max tokens: {'auto' if max_tokens is None else max_tokens}")
         print(f"  - GPU layers: {n_gpu_layers}")
         print(f"  - Seed: {seed}")
         print(f"  - Rebuild index: {rebuild_index}")
@@ -214,6 +219,7 @@ class AuRAGSystem(RAGSystem):
             'model_path': llm_model_path,
             'n_ctx': n_ctx,
             'n_gpu_layers': n_gpu_layers,
+            'max_tokens': max_tokens,
             'seed': seed,
         }
         
@@ -286,7 +292,7 @@ class AuRAGSystem(RAGSystem):
             structured_output = rdg.generate(
                 question=question,
                 documents=docs,
-                max_tokens=3072,
+                max_tokens=self.rdg_config.get('max_tokens'),
                 answer_mode="yn",
             )
             generation_time = time.time() - t1

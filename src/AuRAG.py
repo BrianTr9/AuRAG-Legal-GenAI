@@ -23,7 +23,7 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 
 from SPHR import HierarchicalChunker, HierarchicalRetriever
-from RDG import get_rdg_pipeline
+from RDG import get_rdg_pipeline, DEFAULT_N_CTX
 
 
 @dataclass
@@ -45,8 +45,8 @@ class AuRAGConfig:
     
     # Layer 2: RDG Model
     n_gpu_layers: int = -1
-    n_ctx: int = 16384
-    max_tokens: int = 3072
+    n_ctx: int = DEFAULT_N_CTX
+    max_tokens: Optional[int] = None
     seed: int = 42
     
     # Embeddings

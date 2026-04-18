@@ -11,20 +11,26 @@ Compares:
 - rdg: RDG (grammar-constrained JSON) with the same prompt
 
 Usage:
-    # RDG (ideal retrieval)
+    Minimal CLI (quick run):
+    python3 evaluation/evaluate_generation.py --mode rdg
+
+    Complete CLI (reproducible and model-agnostic):
     python3 evaluation/evaluate_generation.py \
         --corpus benchmark/COLIEE/civil.xml \
         --queries benchmark/COLIEE/simple/simple_R06_jp.xml \
-        --mode rdg
+        --mode rdg \
+        --llm-model models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf \
+        --n-ctx 16384 \
+        --max-tokens auto \
+        --n-gpu-layers -1 \
+        --seed 42
 
-    # Prompt baseline (ideal retrieval)
-    python3 evaluation/evaluate_generation.py \
-        --corpus benchmark/COLIEE/civil.xml \
-        --queries benchmark/COLIEE/simple/simple_R06_jp.xml \
-        --mode prompt
+    Compare RDG vs prompt baseline with the same budget:
+    python3 evaluation/evaluate_generation.py --mode rdg --llm-model <model.gguf> --n-ctx <ctx> --max-tokens auto
+    python3 evaluation/evaluate_generation.py --mode prompt --llm-model <model.gguf> --n-ctx <ctx> --max-tokens auto
 
-    # Fast smoke test (10 queries)
-    python3 evaluation/evaluate_generation.py --mode rdg --sample-queries 10
+    Smoke test (10 queries):
+    python3 evaluation/evaluate_generation.py --mode rdg --sample-queries 10 --max-tokens auto
 """
 
 import argparse
@@ -32,7 +38,7 @@ import json
 import random
 import time
 from pathlib import Path
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any, Tuple, Optional
 from statistics import mean, stdev
 
 from langchain_core.documents import Document
@@ -55,6 +61,7 @@ from evaluation.evaluate_end2end import (
 
 from RDG import (
     get_rdg_pipeline,
+    DEFAULT_N_CTX,
     Citation,
     StructuredReasoning,
     _parse_json_output,
@@ -105,7 +112,7 @@ def extract_article_ids_from_citations(citations: List[Citation]) -> List[str]:
     return sorted(set(ids))
 
 
-def prompt_only_generate(rdg, question: str, documents: List[Document], max_tokens: int = 1024, temperature: float = 0.0):
+def prompt_only_generate(rdg, question: str, documents: List[Document], max_tokens: Optional[int] = None, temperature: float = 0.0):
     # FAIRNESS: Use the exact same context construction as RDG (Full Headers)
     # This ensures both models see the same information (including Section Titles).
     valid_refs_full = rdg.extractor.extract_references(documents)
@@ -127,10 +134,11 @@ def prompt_only_generate(rdg, question: str, documents: List[Document], max_toke
         "\n\n---\n\n".join(context_parts),
         answer_mode="yn",
     )
+    effective_max_tokens = rdg.resolve_max_tokens(prompt, max_tokens=max_tokens)
 
     output = rdg.llm(
         prompt,
-        max_tokens=max_tokens,
+        max_tokens=effective_max_tokens,
         temperature=temperature,
         repeat_penalty=1.12,
         stop=["<|eot_id|>", "<|end_of_text|>"]
@@ -147,6 +155,7 @@ def prompt_only_generate(rdg, question: str, documents: List[Document], max_toke
             'citations': [],
             'json_parse_success': 0,
             'raw_output_text': raw_text,
+            'effective_max_tokens': effective_max_tokens,
         }
     reasoning = StructuredReasoning.from_dict(output_dict.get('reasoning', {}))
     validated_citations = collect_validated_citations(output_dict, valid_refs_full, citation_mode="short")
@@ -157,7 +166,18 @@ def prompt_only_generate(rdg, question: str, documents: List[Document], max_toke
         'citations': validated_citations,
         'json_parse_success': 1,
         'raw_output_text': raw_text,
+        'effective_max_tokens': effective_max_tokens,
     }
+
+
+def parse_max_tokens_arg(value: str) -> Optional[int]:
+    text = str(value).strip().lower()
+    if text in ('auto', 'max', 'model_max'):
+        return None
+    parsed = int(text)
+    if parsed <= 0:
+        return None
+    return parsed
 
 
 def evaluate_generation(
@@ -167,7 +187,7 @@ def evaluate_generation(
     llm_model_path: str,
     n_ctx: int,
     n_gpu_layers: int,
-    max_tokens: int,
+    max_tokens: Optional[int],
     seed: int = 42,
     sample_size: int = None,
 ):
@@ -216,12 +236,16 @@ def evaluate_generation(
             raw_output_text = answer
             if structured.metadata and 'raw_output_text' in structured.metadata:
                 raw_output_text = str(structured.metadata['raw_output_text'])
+            effective_max_tokens = None
+            if structured.metadata and 'effective_max_tokens' in structured.metadata:
+                effective_max_tokens = int(structured.metadata['effective_max_tokens'])
         else:
             baseline = prompt_only_generate(rdg, question, docs, max_tokens=max_tokens, temperature=0.0)
             answer = baseline['answer']
             citations = extract_article_ids_from_citations(baseline['citations'])
             json_parse_success = int(baseline.get('json_parse_success', 0))
             raw_output_text = str(baseline.get('raw_output_text', answer))
+            effective_max_tokens = baseline.get('effective_max_tokens')
 
         generation_time = time.time() - t_start
 
@@ -278,6 +302,7 @@ def evaluate_generation(
             'ground_truth_answer': ground_truth,
             'predicted_answer': predicted_label,
             'raw_output_text': raw_output_text,
+            'effective_max_tokens': effective_max_tokens,
         })
 
     aggregate_metrics = {
@@ -324,9 +349,10 @@ def main():
     parser.add_argument('--queries', type=str, default='benchmark/COLIEE/simple/simple_R06_jp.xml')
     parser.add_argument('--mode', type=str, default='rdg', choices=['rdg', 'prompt'])
     parser.add_argument('--llm-model', type=str, default='models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf')
-    parser.add_argument('--n-ctx', type=int, default=16384)
+    parser.add_argument('--n-ctx', type=int, default=DEFAULT_N_CTX)
     parser.add_argument('--n-gpu-layers', type=int, default=-1)
-    parser.add_argument('--max-tokens', type=int, default=1024)
+    parser.add_argument('--max-tokens', type=str, default='auto',
+                        help="Generation token cap. Use an integer, or 'auto' to use each model's max available tokens per prompt.")
     parser.add_argument('--sample-queries', type=int, default=0)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--output', type=str, default='')
@@ -340,6 +366,8 @@ def main():
     if args.sample_queries > 0:
         queries = random.sample(queries, min(args.sample_queries, len(queries)))
 
+    max_tokens = parse_max_tokens_arg(args.max_tokens)
+
     aggregate_metrics, per_query_results, raw_outputs = evaluate_generation(
         mode=args.mode,
         corpus=corpus,
@@ -347,7 +375,7 @@ def main():
         llm_model_path=args.llm_model,
         n_ctx=args.n_ctx,
         n_gpu_layers=args.n_gpu_layers,
-        max_tokens=args.max_tokens,
+        max_tokens=max_tokens,
         seed=args.seed,
         sample_size=None
     )
@@ -357,6 +385,8 @@ def main():
             'mode': args.mode,
             'llm_model': args.llm_model,
             'num_queries': len(per_query_results),
+            'max_tokens_requested': args.max_tokens,
+            'max_tokens_mode': 'auto' if max_tokens is None else 'fixed',
         },
         'aggregate_metrics': aggregate_metrics,
         'per_query_results': per_query_results

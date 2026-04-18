@@ -11,27 +11,27 @@ Systems:
 - flat: Flat chunking baseline (fixed-size, no hierarchy)
 
 Usage:
-    # SPHR (Layer 1)
+    Minimal CLI (quick run):
+    python3 evaluation/evaluate_retrieval.py --system sphr --top-k 5
+
+    Complete CLI (reproducible benchmark):
     python3 evaluation/evaluate_retrieval.py \
         --corpus benchmark/COLIEE/civil.xml \
         --queries benchmark/COLIEE/simple/simple_R06_jp.xml \
         --system sphr \
         --top-k 5 \
+        --retrieval-mode hybrid \
+        --bm25-weight 0.5 \
+        --rrf-k 60 \
         --rebuild-index \
-        --retrieval-mode hybrid
+        --seed 42
 
-    # Flat baseline
-    python3 evaluation/evaluate_retrieval.py \
-        --corpus benchmark/COLIEE/civil.xml \
-        --queries benchmark/COLIEE/simple/simple_R06_jp.xml \
-        --system flat \
-        --top-k 5 \
-        --rebuild-index \
-        --retrieval-mode hybrid
+    Baseline comparison (same retrieval settings):
+    python3 evaluation/evaluate_retrieval.py --system sphr --retrieval-mode hybrid --top-k 5
+    python3 evaluation/evaluate_retrieval.py --system flat --retrieval-mode hybrid --top-k 5
 
-    # Fast smoke test (10 queries)
-    python3 evaluation/evaluate_retrieval.py \
-        --system sphr --top-k 5 --sample-queries 10
+    Smoke test (10 queries):
+    python3 evaluation/evaluate_retrieval.py --system sphr --top-k 5 --sample-queries 10
 """
 
 import argparse

@@ -9,6 +9,30 @@ Evaluates complete RAG systems (retrieval + generation) on:
 
 This script loads COLIEE entailment pairs (Y/N questions + correct article IDs)
 and measures whether RAG systems cite only retrieved articles (hallucination-free).
+
+Usage:
+    Minimal CLI (quick run):
+    python3 evaluation/evaluate_end2end.py --year R06 --system aurag
+
+    Complete CLI (reproducible and model-agnostic):
+    python3 evaluation/evaluate_end2end.py \
+        --corpus benchmark/COLIEE/civil.xml \
+        --queries benchmark/COLIEE/simple/simple_R06_jp.xml \
+        --year R06 \
+        --system aurag \
+        --embedding multilingual \
+        --llm-model models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf \
+        --n-ctx 16384 \
+        --max-tokens auto \
+        --top-k 5 \
+        --retrieval-mode hybrid \
+        --bm25-weight 0.5 \
+        --rrf-k 60 \
+        --rebuild-index \
+        --seed 42
+
+    Cross-model ablation pattern (same policy, different model/context):
+    python3 evaluation/evaluate_end2end.py --llm-model <model.gguf> --n-ctx <ctx> --max-tokens auto
 """
 
 import argparse
@@ -22,7 +46,7 @@ import xml.etree.ElementTree as ET
 from statistics import mean, stdev
 
 from systems.base import RAGSystem
-from systems.AuRAGSystem import AuRAGSystem
+from systems.AuRAGSystem import AuRAGSystem, DEFAULT_N_CTX
 
 
 def normalize_yn_answer(text: str) -> str | None:
@@ -607,6 +631,10 @@ def main():
     parser.add_argument('--llm-model', type=str,
                        default='models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf',
                        help='Path to LLM model (GGUF format) - Llama-3.1-8B for legal context')
+    parser.add_argument('--n-ctx', type=int, default=DEFAULT_N_CTX,
+                       help='Model context window used by llama.cpp')
+    parser.add_argument('--max-tokens', type=str, default='auto',
+                       help="Generation token cap. Use integer or 'auto' to use model max available tokens per prompt.")
     
     # Evaluation parameters
     parser.add_argument('--top-k', type=int, default=5,
@@ -628,6 +656,14 @@ def main():
                        help='Directory to save results')
     
     args = parser.parse_args()
+
+    max_tokens_text = str(args.max_tokens).strip().lower()
+    if max_tokens_text in ('auto', 'max', 'model_max'):
+        parsed_max_tokens = None
+    else:
+        parsed_max_tokens = int(max_tokens_text)
+        if parsed_max_tokens <= 0:
+            parsed_max_tokens = None
 
     # Set seed for reproducibility
     random.seed(args.seed)
@@ -661,6 +697,8 @@ def main():
     print(f"Embedding: {embedding_model}")
     print(f"LLM: {args.llm_model}")
     print(f"Top-K: {args.top_k}")
+    print(f"Model Context (n_ctx): {args.n_ctx}")
+    print(f"Generation Max Tokens: {'auto' if parsed_max_tokens is None else parsed_max_tokens}")
     print(f"Retrieval Mode: {args.retrieval_mode}")
     if args.retrieval_mode == 'hybrid':
         print(f"BM25 Weight: {args.bm25_weight}")
@@ -687,7 +725,8 @@ def main():
             bm25_weight=args.bm25_weight,
             rrf_k=args.rrf_k,
             seed=args.seed,
-            n_ctx=16384,
+            n_ctx=args.n_ctx,
+            max_tokens=parsed_max_tokens,
             n_gpu_layers=-1
         )
     else:

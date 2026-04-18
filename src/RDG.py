@@ -49,6 +49,7 @@ except ImportError:
     LlamaGrammar = None
 
 DEFAULT_MODEL_PATH = "models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
+DEFAULT_N_CTX = 16384
 
 # ==========================================
 # DATA MODELS
@@ -327,7 +328,7 @@ class RDGPipeline:
     def __init__(
         self,
         model_path: str = None,
-        n_ctx: int = 16384,
+        n_ctx: int = DEFAULT_N_CTX,
         n_gpu_layers: int = -1,
         verbose: bool = False,
         seed: int = 42,
@@ -336,6 +337,7 @@ class RDGPipeline:
         
         self.model_path = model_path or DEFAULT_MODEL_PATH
         self.seed = int(seed)
+        self.n_ctx = int(n_ctx)
         if not os.path.exists(self.model_path):
             raise RuntimeError(f"GGUF Model not found at {self.model_path}")
         
@@ -356,6 +358,45 @@ class RDGPipeline:
         self.grammar_builder = GBNFGrammarBuilder()
         self.extractor = ReferenceExtractor()
         print(f"✓ Model Loaded (Ctx: {n_ctx}, Seed: {self.seed})")
+
+    def _get_model_n_ctx(self) -> int:
+        """Best-effort retrieval of active model context window size."""
+        try:
+            ctx = self.llm.n_ctx()
+            if isinstance(ctx, int) and ctx > 0:
+                return ctx
+        except Exception:
+            pass
+
+        try:
+            ctx = getattr(self.llm, "n_ctx", None)
+            if isinstance(ctx, int) and ctx > 0:
+                return ctx
+        except Exception:
+            pass
+
+        return self.n_ctx
+
+    def _count_prompt_tokens(self, prompt: str) -> int:
+        """Count prompt tokens with llama tokenizer; fallback to rough approximation."""
+        try:
+            return len(self.llm.tokenize(prompt.encode("utf-8")))
+        except Exception:
+            return max(1, len(prompt) // 4)
+
+    def resolve_max_tokens(self, prompt: str, max_tokens: Optional[int], reserve_tokens: int = 64) -> int:
+        """Resolve generation budget from model context and prompt length.
+
+        If max_tokens is None or <= 0, use the largest available budget.
+        Otherwise, clamp requested max_tokens to the available budget.
+        """
+        prompt_tokens = self._count_prompt_tokens(prompt)
+        model_ctx = self._get_model_n_ctx()
+        available = max(1, model_ctx - prompt_tokens - max(0, reserve_tokens))
+
+        if max_tokens is None or max_tokens <= 0:
+            return available
+        return max(1, min(int(max_tokens), available))
 
     def _build_prompt(self, question: str, valid_refs: List[str], context_str: str, answer_mode: Literal["freeform", "yn"] = "freeform") -> str:
         refs_display = "\n".join([f"  - {r}" for r in valid_refs])
@@ -421,7 +462,7 @@ NOTE:
         self,
         question: str,
         documents: List[Document],
-        max_tokens: int = 3072,
+        max_tokens: Optional[int] = None,
         temperature: float = 0,
         answer_mode: Literal["freeform", "yn"] = "freeform",
     ) -> StructuredOutput:
@@ -448,13 +489,14 @@ NOTE:
             context_parts.append(f"[{ref}]\n{doc.page_content.strip()}")
         
         prompt = self._build_prompt(question, valid_refs, "\n\n---\n\n".join(context_parts), answer_mode=answer_mode)
+        effective_max_tokens = self.resolve_max_tokens(prompt, max_tokens=max_tokens)
 
         # 3. Generate
-        print(f"🔄 RDG Thinking...", end="", flush=True)
+        print(f"🔄 RDG Thinking... (max_tokens={effective_max_tokens})", end="", flush=True)
         output = self.llm(
             prompt,
             grammar=grammar,
-            max_tokens=max_tokens,
+            max_tokens=effective_max_tokens,
             temperature=temperature,
             repeat_penalty=1.12,  # Anti-loop
             stop=["<|eot_id|>", "<|end_of_text|>"]
@@ -487,6 +529,7 @@ NOTE:
             metadata={
                 "json_parse_success": 1,
                 "raw_output_text": raw_text,
+                "effective_max_tokens": effective_max_tokens,
             },
         )
 

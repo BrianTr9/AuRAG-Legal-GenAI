@@ -107,7 +107,28 @@ AuRAG is evaluated on the **COLIEE task 3 (Statute Law)** benchmark.
 
 ### **Run Evaluation**
 ```bash
-python evaluation/evaluate_end2end.py --year R06 --system aurag --top-k 5
+# Minimal CLI (quick run)
+python3 evaluation/evaluate_end2end.py --year R06 --system aurag
+
+# Complete CLI (reproducible, model-agnostic token budget)
+python3 evaluation/evaluate_end2end.py \
+    --corpus benchmark/COLIEE/civil.xml \
+    --queries benchmark/COLIEE/simple/simple_R06_jp.xml \
+    --year R06 \
+    --system aurag \
+    --embedding multilingual \
+    --llm-model models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf \
+    --n-ctx 16384 \
+    --max-tokens auto \
+    --top-k 5 \
+    --retrieval-mode hybrid \
+    --bm25-weight 0.5 \
+    --rrf-k 60 \
+    --rebuild-index \
+    --seed 42
+
+# Layer-2 generation only (ideal retrieval)
+python3 evaluation/evaluate_generation.py --mode rdg --llm-model <model.gguf> --n-ctx <ctx> --max-tokens auto
 ```
 
 ---
