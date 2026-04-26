@@ -123,12 +123,14 @@ class AuRAGSystem(RAGSystem):
         
         for article_id, article_data in corpus.items():
             article_text = article_data['text']
-            article_num = article_data['caption']
+            # IMPORTANT: use canonical corpus unit_id as contract_id.
+            # Captions are human-readable labels, not stable retrieval ids.
+            unit_id = str(article_id)
             
             # Generate hierarchical chunks using chunk_contract method
             parent_chunks, child_chunks = chunker.chunk_contract(
                 article_text,
-                contract_id=article_num
+                contract_id=unit_id
             )
             
             all_parent_chunks.extend(parent_chunks)

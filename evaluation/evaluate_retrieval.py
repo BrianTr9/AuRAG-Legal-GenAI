@@ -40,73 +40,32 @@ import random
 import shutil
 import math
 import re
+import sys
 from pathlib import Path
 from typing import Dict, List, Any
 from statistics import mean, stdev
-import xml.etree.ElementTree as ET
 
 from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 from rank_bm25 import BM25Okapi
 
-# Add src/ to path to import AuRAG modules
-import sys
+# Add src/ and project root to path for local imports
+EVAL_PATH = Path(__file__).parent
+ROOT_PATH = EVAL_PATH.parent
+sys.path.insert(0, str(ROOT_PATH))
+
 SRC_PATH = Path(__file__).parent.parent / "src"
 sys.path.insert(0, str(SRC_PATH))
 
 from SPHR import HierarchicalChunker, HierarchicalRetriever
+from evaluation.adapters import available_datasets, load_dataset
+from evaluation.dataset_defaults import resolve_dataset_paths
 
 try:
     import tiktoken
 except Exception:
     tiktoken = None
-
-
-def load_coliee_corpus(xml_path: Path) -> Dict[str, Dict[str, str]]:
-    """Load COLIEE corpus from civil.xml."""
-    tree = ET.parse(xml_path)
-    root = tree.getroot()
-    corpus = {}
-    for article in root.findall('Article'):
-        article_num = article.get('num')
-        caption_elem = article.find('caption')
-        caption = caption_elem.text.strip() if caption_elem is not None and caption_elem.text else ""
-        text_elem = article.find('text')
-        article_text = text_elem.text.strip() if text_elem is not None and text_elem.text else ""
-        if article_num and article_text:
-            corpus[article_num] = {
-                'caption': article_num,
-                'text': article_text
-            }
-    return corpus
-
-
-def load_coliee_queries(xml_path: Path) -> List[Dict[str, Any]]:
-    """Load COLIEE entailment queries from simple_R0X_jp.xml."""
-    tree = ET.parse(xml_path)
-    root = tree.getroot()
-    queries = []
-    for pair in root.findall('pair'):
-        pair_id = pair.get('id')
-        ground_truth = (pair.get('label') or 'N').strip()
-        t2_elem = pair.find('t2')
-        question = "".join(t2_elem.itertext()).strip() if t2_elem is not None else ""
-        
-        # Relevant articles - use itertext() to handle nested elements, allow hyphens like "424-4"
-        relevant_articles: List[str] = []
-        for art in pair.findall('article'):
-            val = ("".join(art.itertext()) if art is not None else "").strip()
-            if len(val) > 0:
-                relevant_articles.append(val)
-        
-        queries.append({
-            'query_id': pair_id,
-            'question': question,
-            'ground_truth_answer': ground_truth,
-            'relevant_articles': relevant_articles
-        })
-    return queries
 
 
 def chunk_flat(text: str, contract_id: str, chunk_size: int = 300, overlap: int = 90) -> List[Document]:
@@ -278,8 +237,10 @@ def build_sphr_index(
 
     for article_id, article_data in corpus.items():
         article_text = article_data['text']
-        article_num = article_data['caption']
-        parent_chunks, child_chunks = chunker.chunk_contract(article_text, contract_id=article_num)
+        # IMPORTANT: use canonical corpus unit_id as retrieval identity.
+        # `caption` is display metadata and may not be unique/stable across datasets.
+        unit_id = str(article_id)
+        parent_chunks, child_chunks = chunker.chunk_contract(article_text, contract_id=unit_id)
         all_parent_chunks.extend(parent_chunks)
         all_child_chunks.extend(child_chunks)
         for parent in parent_chunks:
@@ -359,8 +320,8 @@ def build_flat_index(
     documents = []
     for article_id, article_data in corpus.items():
         article_text = article_data['text']
-        article_num = article_data['caption']
-        documents.extend(chunk_flat(article_text, contract_id=article_num, chunk_size=chunk_size, overlap=overlap))
+        unit_id = str(article_id)
+        documents.extend(chunk_flat(article_text, contract_id=unit_id, chunk_size=chunk_size, overlap=overlap))
 
     embedding = HuggingFaceEmbeddings(
         model_name=embedding_model,
@@ -433,8 +394,11 @@ def calculate_retrieval_metrics(retrieved: List[str], relevant: List[str]) -> Di
 
 def main():
     parser = argparse.ArgumentParser(description="Retrieval-Only Evaluation (Layer 1)")
-    parser.add_argument('--corpus', type=str, default='benchmark/COLIEE/civil.xml')
-    parser.add_argument('--queries', type=str, default='benchmark/COLIEE/simple/simple_R06_jp.xml')
+    dataset_choices = available_datasets()
+    parser.add_argument('--dataset', type=str, default='coliee', choices=dataset_choices,
+                        help='Dataset adapter to use for corpus/query loading')
+    parser.add_argument('--corpus', type=str, default=None, help='Optional corpus path override')
+    parser.add_argument('--queries', type=str, default=None, help='Optional queries path override')
     parser.add_argument('--system', type=str, default='sphr', choices=['sphr', 'flat'])
     parser.add_argument('--top-k', type=int, default=5)
     parser.add_argument('--embedding', type=str, default='intfloat/multilingual-e5-small')
@@ -458,8 +422,19 @@ def main():
 
     random.seed(args.seed)
 
-    corpus = load_coliee_corpus(Path(args.corpus))
-    queries = load_coliee_queries(Path(args.queries))
+    workspace_root = Path(__file__).parent.parent
+    corpus_path, queries_path = resolve_dataset_paths(
+        dataset=args.dataset,
+        workspace_root=workspace_root,
+        provided_corpus=args.corpus,
+        provided_queries=args.queries,
+    )
+    corpus, queries, dataset_metadata = load_dataset(
+        dataset=args.dataset,
+        workspace_root=workspace_root,
+        corpus_path=corpus_path,
+        queries_path=queries_path,
+    )
 
     if args.sample_queries and args.sample_queries > 0:
         queries = random.sample(queries, min(args.sample_queries, len(queries)))
@@ -544,6 +519,8 @@ def main():
 
     output = {
         'metadata': {
+            'dataset': args.dataset,
+            **dataset_metadata,
             'system': args.system,
             'embedding': args.embedding,
             'top_k': args.top_k,

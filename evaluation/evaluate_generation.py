@@ -38,7 +38,7 @@ import json
 import random
 import time
 from pathlib import Path
-from typing import Dict, List, Any, Tuple, Optional
+from typing import Dict, List, Any, Tuple, Optional, Literal
 from statistics import mean, stdev
 
 from langchain_core.documents import Document
@@ -53,11 +53,11 @@ sys.path.insert(0, str(SRC_PATH))
 
 # Local imports
 from evaluation.evaluate_end2end import (
-    load_coliee_corpus,
-    load_coliee_queries,
     normalize_yn_answer,
     calculate_citation_metrics,
 )
+from evaluation.adapters import available_datasets, load_dataset
+from evaluation.dataset_defaults import resolve_dataset_paths
 
 from RDG import (
     get_rdg_pipeline,
@@ -112,7 +112,14 @@ def extract_article_ids_from_citations(citations: List[Citation]) -> List[str]:
     return sorted(set(ids))
 
 
-def prompt_only_generate(rdg, question: str, documents: List[Document], max_tokens: Optional[int] = None, temperature: float = 0.0):
+def prompt_only_generate(
+    rdg,
+    question: str,
+    documents: List[Document],
+    max_tokens: Optional[int] = None,
+    temperature: float = 0.0,
+    citation_mode: Literal["short", "both"] = "short",
+):
     # FAIRNESS: Use the exact same context construction as RDG (Full Headers)
     # This ensures both models see the same information (including Section Titles).
     valid_refs_full = rdg.extractor.extract_references(documents)
@@ -158,7 +165,7 @@ def prompt_only_generate(rdg, question: str, documents: List[Document], max_toke
             'effective_max_tokens': effective_max_tokens,
         }
     reasoning = StructuredReasoning.from_dict(output_dict.get('reasoning', {}))
-    validated_citations = collect_validated_citations(output_dict, valid_refs_full, citation_mode="short")
+    validated_citations = collect_validated_citations(output_dict, valid_refs_full, citation_mode=citation_mode)
 
     return {
         'answer': output_dict.get('answer', ''),
@@ -188,6 +195,7 @@ def evaluate_generation(
     n_ctx: int,
     n_gpu_layers: int,
     max_tokens: Optional[int],
+    citation_mode: Literal["short", "both"] = "short",
     seed: int = 42,
     sample_size: int = None,
 ):
@@ -240,7 +248,14 @@ def evaluate_generation(
             if structured.metadata and 'effective_max_tokens' in structured.metadata:
                 effective_max_tokens = int(structured.metadata['effective_max_tokens'])
         else:
-            baseline = prompt_only_generate(rdg, question, docs, max_tokens=max_tokens, temperature=0.0)
+            baseline = prompt_only_generate(
+                rdg,
+                question,
+                docs,
+                max_tokens=max_tokens,
+                temperature=0.0,
+                citation_mode=citation_mode,
+            )
             answer = baseline['answer']
             citations = extract_article_ids_from_citations(baseline['citations'])
             json_parse_success = int(baseline.get('json_parse_success', 0))
@@ -250,12 +265,15 @@ def evaluate_generation(
         generation_time = time.time() - t_start
 
         predicted_label = normalize_yn_answer(answer) if json_parse_success == 1 else None
-        gt_label = (ground_truth or 'N').strip().upper()
-        is_correct = 1 if predicted_label == gt_label else 0
+        has_gt_answer = ground_truth is not None and str(ground_truth).strip() != ''
+        gt_label = (str(ground_truth).strip().upper() if has_gt_answer else None)
+        is_correct = (1 if predicted_label == gt_label else 0) if has_gt_answer else None
 
         metrics = calculate_citation_metrics(citations, retrieved, relevant_articles)
         
-        print(f"  Answer: {gt_label} → {predicted_label or '?'} {'✓' if is_correct == 1 else '✗'}")
+        gt_print = gt_label if gt_label is not None else 'N/A'
+        status = '✓' if is_correct == 1 else ('✗' if is_correct == 0 else '-')
+        print(f"  Answer: {gt_print} → {predicted_label or '?'} {status}")
         print(
             f"  Hallucination: {metrics['citation_hallucination_rate']*100:.1f}% | "
             f"Precision: {metrics['citation_precision']*100:.1f}% | "
@@ -272,7 +290,8 @@ def evaluate_generation(
         citation_precisions.append(metrics['citation_precision'])
         precision_num_used += 1
         citation_recalls.append(metrics['citation_recall'])
-        answer_correctness.append(is_correct)
+        if is_correct is not None:
+            answer_correctness.append(is_correct)
         generation_times.append(generation_time)
 
         # Store result (minimal necessary fields)
@@ -325,7 +344,7 @@ def evaluate_generation(
             'mean': mean(answer_correctness) if answer_correctness else 0.0,
             'count_correct': sum(answer_correctness),
             'count_wrong': len(answer_correctness) - sum(answer_correctness),
-            'total': len(answer_correctness)
+            'total': len(answer_correctness),
         },
         'json_compliance': {
             'mean': mean([r['json_parse_success'] for r in per_query_results]) if per_query_results else 0.0,
@@ -345,14 +364,19 @@ def evaluate_generation(
 
 def main():
     parser = argparse.ArgumentParser(description="Generation Evaluation with Ideal Retrieval (GT)")
-    parser.add_argument('--corpus', type=str, default='benchmark/COLIEE/civil.xml')
-    parser.add_argument('--queries', type=str, default='benchmark/COLIEE/simple/simple_R06_jp.xml')
+    dataset_choices = available_datasets()
+    parser.add_argument('--dataset', type=str, default='coliee', choices=dataset_choices,
+                        help='Dataset adapter to use for corpus/query loading')
+    parser.add_argument('--corpus', type=str, default=None, help='Optional corpus path override')
+    parser.add_argument('--queries', type=str, default=None, help='Optional queries path override')
     parser.add_argument('--mode', type=str, default='rdg', choices=['rdg', 'prompt'])
     parser.add_argument('--llm-model', type=str, default='models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf')
     parser.add_argument('--n-ctx', type=int, default=DEFAULT_N_CTX)
     parser.add_argument('--n-gpu-layers', type=int, default=-1)
     parser.add_argument('--max-tokens', type=str, default='auto',
                         help="Generation token cap. Use an integer, or 'auto' to use each model's max available tokens per prompt.")
+    parser.add_argument('--citation-mode', type=str, default='short', choices=['short', 'both'],
+                        help="Citation parser mode. Applies only to --mode prompt: 'short' accepts doc_x_sec_y only; 'both' also accepts full-form refs. Ignored in --mode rdg.")
     parser.add_argument('--sample-queries', type=int, default=0)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--output', type=str, default='')
@@ -360,13 +384,27 @@ def main():
 
     random.seed(args.seed)
 
-    corpus = load_coliee_corpus(Path(args.corpus))
-    queries = load_coliee_queries(Path(args.queries))
+    workspace_root = Path(__file__).parent.parent
+    corpus_path, queries_path = resolve_dataset_paths(
+        dataset=args.dataset,
+        workspace_root=workspace_root,
+        provided_corpus=args.corpus,
+        provided_queries=args.queries,
+    )
+    corpus, queries, dataset_metadata = load_dataset(
+        dataset=args.dataset,
+        workspace_root=workspace_root,
+        corpus_path=corpus_path,
+        queries_path=queries_path,
+    )
 
     if args.sample_queries > 0:
         queries = random.sample(queries, min(args.sample_queries, len(queries)))
 
     max_tokens = parse_max_tokens_arg(args.max_tokens)
+    citation_mode_applied = args.citation_mode if args.mode == 'prompt' else 'rdg_internal'
+    if args.mode == 'rdg' and args.citation_mode != 'short':
+        print("ℹ️  --citation-mode is ignored in RDG mode (using RDG internal citation extraction).")
 
     aggregate_metrics, per_query_results, raw_outputs = evaluate_generation(
         mode=args.mode,
@@ -376,13 +414,18 @@ def main():
         n_ctx=args.n_ctx,
         n_gpu_layers=args.n_gpu_layers,
         max_tokens=max_tokens,
+        citation_mode=args.citation_mode,
         seed=args.seed,
         sample_size=None
     )
 
     output = {
         'metadata': {
+            'dataset': args.dataset,
+            **dataset_metadata,
             'mode': args.mode,
+            'citation_mode': citation_mode_applied,
+            'citation_mode_requested': args.citation_mode,
             'llm_model': args.llm_model,
             'num_queries': len(per_query_results),
             'max_tokens_requested': args.max_tokens,

@@ -39,14 +39,22 @@ import argparse
 import json
 import random
 import time
+import sys
 from pathlib import Path
 from typing import Dict, List, Any, Tuple
 from datetime import datetime
-import xml.etree.ElementTree as ET
 from statistics import mean, stdev
 
+# Add project root so `evaluation.*` imports work when running this file directly.
+EVAL_PATH = Path(__file__).parent
+ROOT_PATH = EVAL_PATH.parent
+sys.path.insert(0, str(ROOT_PATH))
+
 from systems.base import RAGSystem
-from systems.AuRAGSystem import AuRAGSystem, DEFAULT_N_CTX
+from systems.AuRAGSystem import DEFAULT_N_CTX
+from systems.registry import available_systems, create_system
+from evaluation.adapters import available_datasets, load_dataset
+from evaluation.dataset_defaults import resolve_dataset_paths
 
 
 def normalize_yn_answer(text: str) -> str | None:
@@ -97,95 +105,6 @@ def normalize_yn_answer(text: str) -> str | None:
     if s == "いいえ" or s.startswith("いいえ"): return "N"
 
     return None
-
-
-def load_coliee_corpus(xml_path: Path) -> Dict[str, Dict[str, str]]:
-    """
-    Load COLIEE corpus from civil.xml.
-    
-    Args:
-        xml_path: Path to civil.xml
-        
-    Returns:
-        Dict mapping article_id -> {'caption': article_number, 'text': full_text}
-    """
-    print(f"\n📂 Loading corpus from {xml_path}")
-    tree = ET.parse(xml_path)
-    root = tree.getroot()
-    
-    corpus = {}
-    for article in root.findall('Article'):  # Capital 'A'
-        article_num = article.get('num')  # Use 'num' attribute
-        
-        # Extract caption
-        caption_elem = article.find('caption')
-        caption = caption_elem.text.strip() if caption_elem is not None and caption_elem.text else ""
-        
-        # Extract text
-        text_elem = article.find('text')
-        article_text = text_elem.text.strip() if text_elem is not None and text_elem.text else ""
-        
-        if article_num and article_text:
-            corpus[article_num] = {
-                'caption': article_num,  # Use article number as caption
-                'text': article_text
-            }
-    
-    print(f"  ✓ Loaded {len(corpus)} articles")
-    return corpus
-
-
-def load_coliee_queries(xml_path: Path) -> List[Dict[str, Any]]:
-    """
-    Load COLIEE entailment queries from simple_R0X_jp.xml.
-    
-    Args:
-        xml_path: Path to simple_R0X_jp.xml
-        
-    Returns:
-        List of queries with format:
-        [
-            {
-                'query_id': 'R06-01-A',
-                'question': 'Japanese legal statement...',
-                'ground_truth_answer': 'Y' or 'N',
-                'relevant_articles': ['11', '7']  # Article numbers from <article> tags
-            },
-            ...
-        ]
-    """
-    print(f"\n📂 Loading queries from {xml_path}")
-    tree = ET.parse(xml_path)
-    root = tree.getroot()
-    
-    queries = []
-    for pair in root.findall('pair'):
-        pair_id = pair.get('id')
-
-        # Ground-truth label is on the <pair> element
-        ground_truth = (pair.get('label') or 'N').strip()
-
-        # The statement itself is in <t2> (no <t1> in these COLIEE 'simple' files)
-        t2_elem = pair.find('t2')
-        question = "".join(t2_elem.itertext()).strip() if t2_elem is not None else ""
-
-        # Relevant articles are explicitly listed as <article>11</article>
-        relevant_articles: List[str] = []
-        for art in pair.findall('article'):
-            val = ("".join(art.itertext()) if art is not None else "").strip()
-            # Fix: Allow hyphens for articles like "424-4", "98-2"
-            if len(val) > 0:
-                relevant_articles.append(val)
-        
-        queries.append({
-            'query_id': pair_id,
-            'question': question,
-            'ground_truth_answer': ground_truth,
-            'relevant_articles': relevant_articles
-        })
-    
-    print(f"  ✓ Loaded {len(queries)} queries")
-    return queries
 
 
 def calculate_citation_metrics(
@@ -327,7 +246,6 @@ def evaluate_rag_system(
     system: RAGSystem,
     queries: List[Dict[str, Any]],
     system_name: str,
-    sample_size: int = None
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """
     Evaluate a RAG system on citation constraints and answer quality.
@@ -336,8 +254,6 @@ def evaluate_rag_system(
         system: RAG system instance (implements RAGSystem interface)
         queries: List of query dictionaries
         system_name: Name for logging
-        sample_size: Limit to first N queries (for testing)
-        
     Returns:
         (aggregate_metrics, per_query_results)
     """
@@ -345,12 +261,7 @@ def evaluate_rag_system(
     print(f"Evaluating {system_name.upper()} System")
     print(f"{'='*70}")
     
-    # Sample queries if requested
-    if sample_size:
-        queries = queries[:sample_size]
-        print(f"\n📊 Testing on {len(queries)} sample queries")
-    else:
-        print(f"\n📊 Evaluating on {len(queries)} queries")
+    print(f"\n📊 Evaluating on {len(queries)} queries")
     
     per_query_results = []
     
@@ -395,11 +306,15 @@ def evaluate_rag_system(
         generation_time = result.get('generation_time', 0.0)
 
         predicted_label = normalize_yn_answer(answer) if json_parse_success == 1 else None
-        gt_label = (ground_truth or 'N').strip().upper()
-        
-        # FIX: If the model fails to output a parsable answer, it counts as wrong (0)
-        # Previous logic ignored `None`, artificially inflating accuracy for bad baselines.
-        is_correct = 1 if predicted_label == gt_label else 0
+        has_gt_answer = ground_truth is not None and str(ground_truth).strip() != ''
+        gt_label = (str(ground_truth).strip().upper() if has_gt_answer else None)
+
+        # If no canonical GT answer exists for a dataset, skip answer-accuracy scoring.
+        if has_gt_answer:
+            # If the model fails to output a parsable answer, it counts as wrong (0).
+            is_correct = 1 if predicted_label == gt_label else 0
+        else:
+            is_correct = None
         is_parsed = 1 if predicted_label is not None else 0
         
         print(f"  Retrieved: {len(retrieved)} articles")
@@ -416,7 +331,8 @@ def evaluate_rag_system(
         print(f"  Citation Recall: {metrics['citation_recall']*100:.1f}%")
         print(f"  Retrieval Hit@K: {retrieval_metrics['retrieval_hit']*100:.1f}%")
         print(f"  Retrieval Recall@K: {retrieval_metrics['retrieval_recall']*100:.1f}%")
-        print(f"  Answer (GT→Pred): {gt_label} → {predicted_label if predicted_label is not None else 'UNK'}")
+        gt_print = gt_label if gt_label is not None else 'N/A'
+        print(f"  Answer (GT→Pred): {gt_print} → {predicted_label if predicted_label is not None else 'UNK'}")
         # Debug-friendly inspection: show GT vs LLM citation IDs directly.
         gt_list = sorted(set(relevant_articles))
         llm_list = sorted(set(citations))
@@ -445,9 +361,9 @@ def evaluate_rag_system(
         retrieval_precisions.append(retrieval_metrics['retrieval_precision'])
         retrieval_recalls.append(retrieval_metrics['retrieval_recall'])
         
-        # Always append to correctness (unparsed = wrong)
-        answer_correctness.append(is_correct)
-        answer_coverage.append(is_parsed)
+        if is_correct is not None:
+            answer_correctness.append(is_correct)
+            answer_coverage.append(is_parsed)
         
         retrieval_times.append(retrieval_time)
         generation_times.append(generation_time)
@@ -613,18 +529,23 @@ def save_results(
 
 def main():
     parser = argparse.ArgumentParser(description="Template 2: End-to-End RAG Evaluation")
+
+    dataset_choices = available_datasets()
     
     # Data paths
-    parser.add_argument('--corpus', type=str, default='benchmark/COLIEE/civil.xml',
+    parser.add_argument('--dataset', type=str, default='coliee', choices=dataset_choices,
+                       help='Dataset adapter to use for corpus/query loading')
+    parser.add_argument('--corpus', type=str, default=None,
                        help='Path to corpus XML file')
-    parser.add_argument('--queries', type=str, default='benchmark/COLIEE/simple/simple_R06_jp.xml',
+    parser.add_argument('--queries', type=str, default=None,
                        help='Path to queries XML file')
     parser.add_argument('--year', type=str, default='R06',
-                       help='COLIEE year identifier')
+                       help='COLIEE year identifier used for default query file selection when --dataset coliee and --queries is not provided')
     
     # System configuration
+    system_choices = available_systems()
     parser.add_argument('--system', type=str, default='aurag',
-                       choices=['aurag'],
+                       choices=system_choices,
                        help='RAG system to evaluate')
     parser.add_argument('--embedding', type=str, default='multilingual',
                        help='Embedding model identifier')
@@ -670,14 +591,40 @@ def main():
     
     # Resolve paths
     workspace_root = Path(__file__).parent.parent
-    corpus_path = workspace_root / args.corpus
-    queries_path = workspace_root / args.queries
     output_dir = workspace_root / args.output_dir
     output_dir.mkdir(exist_ok=True)
+
+    # For COLIEE, map --year to default query path unless user explicitly overrides --queries.
+    provided_queries = args.queries
+    if args.dataset == 'coliee' and not args.queries:
+        year_upper = str(args.year).strip().upper()
+        year_query_candidate = f"benchmark/COLIEE/simple/simple_{year_upper}_jp.xml"
+        year_query_candidate_path = workspace_root / year_query_candidate
+        if year_query_candidate_path.exists():
+            provided_queries = year_query_candidate
+        else:
+            print(
+                f"⚠️  COLIEE year file not found for {year_upper}: {year_query_candidate}. "
+                "Falling back to dataset default queries."
+            )
+
+    # Resolve dataset-specific paths via standardized dataset defaults/overrides.
+    corpus_path, queries_path = resolve_dataset_paths(
+        dataset=args.dataset,
+        workspace_root=workspace_root,
+        provided_corpus=args.corpus,
+        provided_queries=provided_queries,
+    )
     
-    # Load data
-    corpus = load_coliee_corpus(corpus_path)
-    queries = load_coliee_queries(queries_path)
+    corpus, queries, dataset_metadata = load_dataset(
+        dataset=args.dataset,
+        workspace_root=workspace_root,
+        corpus_path=corpus_path,
+        queries_path=queries_path,
+    )
+
+    if args.sample_queries and args.sample_queries > 0:
+        queries = random.sample(queries, min(args.sample_queries, len(queries)))
     
     # Embedding model mapping
     EMBEDDINGS_CONFIG = {
@@ -692,6 +639,7 @@ def main():
     print(f"TEMPLATE 2: END-TO-END RAG EVALUATION")
     print(f"{'='*70}")
     print(f"\nSystem: {args.system.upper()}")
+    print(f"Dataset: {args.dataset}")
     print(f"Corpus: {len(corpus)} articles")
     print(f"Queries: {len(queries)} questions")
     print(f"Embedding: {embedding_model}")
@@ -707,37 +655,34 @@ def main():
         print(f"Sample Size: {args.sample_queries} queries")
     
     # Initialize system
-    if args.system == 'aurag':
-        system = AuRAGSystem(system_name='aurag')
-        db_path = output_dir / f"vector_db_{args.system}_{args.year}_{args.embedding}"
-        
-        system.setup(
-            corpus=corpus,
-            embedding_model=embedding_model,
-            llm_model_path=args.llm_model,
-            db_path=db_path,
-            top_k=args.top_k,
-            rebuild_index=args.rebuild_index,
-            child_chunk_size=300,
-            child_chunk_overlap=90,
-            context_budget=12000,
-            retrieval_mode=args.retrieval_mode,
-            bm25_weight=args.bm25_weight,
-            rrf_k=args.rrf_k,
-            seed=args.seed,
-            n_ctx=args.n_ctx,
-            max_tokens=parsed_max_tokens,
-            n_gpu_layers=-1
-        )
-    else:
-        raise ValueError(f"Unknown system: {args.system}")
+    system = create_system(args.system)
+    dataset_suffix = str(args.year).strip().upper() if args.dataset == 'coliee' else 'default'
+    db_path = output_dir / f"vector_db_{args.system}_{args.dataset}_{dataset_suffix}_{args.embedding}"
+
+    system.setup(
+        corpus=corpus,
+        embedding_model=embedding_model,
+        llm_model_path=args.llm_model,
+        db_path=db_path,
+        top_k=args.top_k,
+        rebuild_index=args.rebuild_index,
+        child_chunk_size=300,
+        child_chunk_overlap=90,
+        context_budget=12000,
+        retrieval_mode=args.retrieval_mode,
+        bm25_weight=args.bm25_weight,
+        rrf_k=args.rrf_k,
+        seed=args.seed,
+        n_ctx=args.n_ctx,
+        max_tokens=parsed_max_tokens,
+        n_gpu_layers=-1
+    )
     
     # Run evaluation
     aggregate_metrics, per_query_results = evaluate_rag_system(
         system=system,
         queries=queries,
         system_name=args.system,
-        sample_size=args.sample_queries
     )
     
     # Save results
@@ -752,7 +697,13 @@ def main():
         system_name=args.system,
         aggregate_metrics=aggregate_metrics,
         per_query_results=per_query_results,
-        metadata=system.get_metadata()
+        metadata={
+            **system.get_metadata(),
+            **dataset_metadata,
+            'dataset_name': args.dataset,
+            'coliee_year': str(args.year).strip().upper() if args.dataset == 'coliee' else None,
+            'queries_path_resolved': str(queries_path),
+        }
     )
     
     print(f"\n✅ Evaluation complete!")
