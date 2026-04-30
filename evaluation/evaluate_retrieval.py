@@ -19,10 +19,12 @@ Usage:
         --corpus benchmark/COLIEE/civil.xml \
         --queries benchmark/COLIEE/simple/simple_R06_jp.xml \
         --system sphr \
-        --top-k 5 \
+        --top-k "3,5,10" \
         --retrieval-mode hybrid \
         --bm25-weight 0.5 \
         --rrf-k 60 \
+        --chunk-workers 3 \
+        --chunk-map-chunksize 16 \
         --rebuild-index \
         --seed 42
 
@@ -452,7 +454,7 @@ def main():
     parser.add_argument('--corpus', type=str, default=None, help='Optional corpus path override')
     parser.add_argument('--queries', type=str, default=None, help='Optional queries path override')
     parser.add_argument('--system', type=str, default='sphr', choices=['sphr', 'flat'])
-    parser.add_argument('--top-k', type=int, default=5)
+    parser.add_argument('--top-k', type=str, default='5', help='Comma-separated list of top-k values, e.g. "3,5,10"')
     parser.add_argument('--embedding', type=str, default='intfloat/multilingual-e5-small')
     parser.add_argument('--device', type=str, default='mps')
     parser.add_argument('--no-normalize-embeddings', action='store_false', dest='normalize_embeddings')
@@ -497,6 +499,20 @@ def main():
 
     output_dir = Path(__file__).parent
 
+    # Parse top-k values
+    try:
+        top_k_list = [int(k.strip()) for k in str(args.top_k).split(',')]
+        top_k_list = sorted(list(set(top_k_list)))  # unique and sorted
+    except ValueError:
+        print(f"❌ Error: Invalid --top-k format: {args.top_k}. Expected comma-separated integers, e.g., '3,5,10'")
+        sys.exit(1)
+
+    if not top_k_list:
+        top_k_list = [5]
+
+    max_k = max(top_k_list)
+    print(f"📊 Running evaluation for top_k values: {top_k_list} (Retrieving max {max_k} documents)")
+
     # Retrieval-only evaluation: always disable context truncation to isolate ranking quality.
     context_budget = 10**9
     if args.system == 'sphr':
@@ -505,7 +521,7 @@ def main():
             args.embedding,
             args.child_chunk_size,
             args.child_chunk_overlap,
-            args.top_k,
+            max_k,
             context_budget,
             output_dir / 'vector_db_sphr',
             args.device,
@@ -523,7 +539,7 @@ def main():
             args.embedding,
             args.child_chunk_size,
             args.child_chunk_overlap,
-            args.top_k,
+            max_k,
             args.retrieval_mode,
             args.bm25_weight,
             args.rrf_k,
@@ -544,44 +560,61 @@ def main():
                 retrieved.append(doc_id)
         return retrieved
 
+    print(f"\n🔍 Retrieving {max_k} documents for {len(queries)} queries...")
+    all_retrieved_results = []
+    
     for q in queries:
         question = q['question']
         relevant = q['relevant_articles']
 
         docs = retriever.invoke(question)
-        retrieved = collect_unique_articles(docs)
-
-        metrics = calculate_retrieval_metrics(retrieved, relevant)
-        hit_scores.append(metrics['hit@k'])
-        prec_scores.append(metrics['precision@k'])
-        rec_scores.append(metrics['recall@k'])
-        f1_scores.append(metrics['f1@k'])
-        mrr_scores.append(metrics['mrr'])
-        ndcg_scores.append(metrics['ndcg@k'])
-
-        per_query_results.append({
-            'query_id': q['query_id'],
-            'ground_truth': relevant,
-            'retrieved': retrieved,
-            'metrics': metrics
+        retrieved_full = collect_unique_articles(docs)
+        
+        all_retrieved_results.append({
+            'query': q,
+            'retrieved_full': retrieved_full
         })
+        
+    print(f"\n📈 Calculating metrics for top_k values: {top_k_list}")
+    for current_k in top_k_list:
+        per_query_results = []
+        hit_scores, prec_scores, rec_scores, f1_scores, mrr_scores, ndcg_scores = [], [], [], [], [], []
 
-    aggregate = {
-        'hit@k': {'mean': mean(hit_scores), 'std': stdev(hit_scores) if len(hit_scores) > 1 else 0.0},
-        'precision@k': {'mean': mean(prec_scores), 'std': stdev(prec_scores) if len(prec_scores) > 1 else 0.0},
-        'recall@k': {'mean': mean(rec_scores), 'std': stdev(rec_scores) if len(rec_scores) > 1 else 0.0},
-        'f1@k': {'mean': mean(f1_scores), 'std': stdev(f1_scores) if len(f1_scores) > 1 else 0.0},
-        'mrr': {'mean': mean(mrr_scores), 'std': stdev(mrr_scores) if len(mrr_scores) > 1 else 0.0},
-        'ndcg@k': {'mean': mean(ndcg_scores), 'std': stdev(ndcg_scores) if len(ndcg_scores) > 1 else 0.0}
-    }
+        for item in all_retrieved_results:
+            q = item['query']
+            relevant = q['relevant_articles']
+            retrieved_k = item['retrieved_full'][:current_k]
 
-    output = {
-        'metadata': {
+            metrics = calculate_retrieval_metrics(retrieved_k, relevant)
+            hit_scores.append(metrics['hit@k'])
+            prec_scores.append(metrics['precision@k'])
+            rec_scores.append(metrics['recall@k'])
+            f1_scores.append(metrics['f1@k'])
+            mrr_scores.append(metrics['mrr'])
+            ndcg_scores.append(metrics['ndcg@k'])
+            
+            per_query_results.append({
+                'query_id': q['query_id'],
+                'ground_truth': relevant,
+                'retrieved': retrieved_k,
+                'metrics': metrics
+            })
+
+        aggregate = {
+            'hit@k': {'mean': mean(hit_scores), 'std': stdev(hit_scores) if len(hit_scores) > 1 else 0.0},
+            'precision@k': {'mean': mean(prec_scores), 'std': stdev(prec_scores) if len(prec_scores) > 1 else 0.0},
+            'recall@k': {'mean': mean(rec_scores), 'std': stdev(rec_scores) if len(rec_scores) > 1 else 0.0},
+            'f1@k': {'mean': mean(f1_scores), 'std': stdev(f1_scores) if len(f1_scores) > 1 else 0.0},
+            'mrr': {'mean': mean(mrr_scores), 'std': stdev(mrr_scores) if len(mrr_scores) > 1 else 0.0},
+            'ndcg@k': {'mean': mean(ndcg_scores), 'std': stdev(ndcg_scores) if len(ndcg_scores) > 1 else 0.0}
+        }
+
+        output_metadata = {
             'dataset': args.dataset,
             **dataset_metadata,
             'system': args.system,
             'embedding': args.embedding,
-            'top_k': args.top_k,
+            'top_k': current_k,
             'num_queries': len(per_query_results),
             'child_chunk_size': args.child_chunk_size,
             'child_chunk_overlap': args.child_chunk_overlap,
@@ -595,20 +628,27 @@ def main():
             'normalize_embeddings': args.normalize_embeddings,
             'rebuild_index': args.rebuild_index,
             'seed': args.seed
-        },
-        'aggregate_metrics': aggregate,
-        'per_query_results': per_query_results
-    }
+        }
 
-    if args.output:
-        output_path = Path(args.output)
-    else:
-        output_path = output_dir / f"evaluation_results_layer1_retrieval_{args.system}_k{args.top_k}.json"
+        output = {
+            'metadata': output_metadata,
+            'aggregate_metrics': aggregate,
+            'per_query_results': per_query_results
+        }
 
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(output, f, indent=2, ensure_ascii=False)
+        if args.output:
+            # If using custom output, suffix the K value before the extension
+            base_path = Path(args.output)
+            output_path = base_path.with_name(f"{base_path.stem}_k{current_k}{base_path.suffix}")
+        else:
+            output_path = output_dir / f"evaluation_results_layer1_retrieval_{args.system}_k{current_k}.json"
 
-    print(f"✅ Retrieval evaluation complete: {output_path}")
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(output, f, indent=2, ensure_ascii=False)
+
+        print(f"  ✅ Saved top_k={current_k}: \thit@k={aggregate['hit@k']['mean']:.4f}\trecall@k={aggregate['recall@k']['mean']:.4f}\t-> {output_path.name}")
+
+    print(f"\n🎉 All {len(top_k_list)} multi-top_k evaluations complete!")
 
 
 if __name__ == '__main__':
