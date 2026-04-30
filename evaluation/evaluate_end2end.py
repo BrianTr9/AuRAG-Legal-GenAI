@@ -12,10 +12,11 @@ and measures whether RAG systems cite only retrieved articles (hallucination-fre
 
 Usage:
     Minimal CLI (quick run):
-    python3 evaluation/evaluate_end2end.py --year R06 --system aurag
+    python3 evaluation/evaluate_end2end.py --dataset coliee --year R06 --system aurag
 
     Complete CLI (reproducible and model-agnostic):
     python3 evaluation/evaluate_end2end.py \
+        --dataset coliee \
         --corpus benchmark/COLIEE/civil.xml \
         --queries benchmark/COLIEE/simple/simple_R06_jp.xml \
         --year R06 \

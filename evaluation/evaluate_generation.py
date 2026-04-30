@@ -12,10 +12,11 @@ Compares:
 
 Usage:
     Minimal CLI (quick run):
-    python3 evaluation/evaluate_generation.py --mode rdg
+    python3 evaluation/evaluate_generation.py --mode rdg --dataset coliee
 
     Complete CLI (reproducible and model-agnostic):
     python3 evaluation/evaluate_generation.py \
+        --dataset coliee \
         --corpus benchmark/COLIEE/civil.xml \
         --queries benchmark/COLIEE/simple/simple_R06_jp.xml \
         --mode rdg \
