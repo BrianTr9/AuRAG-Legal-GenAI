@@ -41,6 +41,7 @@ import shutil
 import math
 import re
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Any
 from statistics import mean, stdev
@@ -214,6 +215,23 @@ class FlatRetriever:
         return [self.chunk_id_to_doc[cid] for cid in ranked_ids if cid in self.chunk_id_to_doc]
 
 
+def _chunk_one_contract_worker(task):
+    article_id, article_text, local_child_size, local_child_overlap = task
+    local_chunker = HierarchicalChunker(child_size=local_child_size, child_overlap=local_child_overlap)
+    unit_id = str(article_id)
+    parent_chunks, child_chunks = local_chunker.chunk_contract(article_text, contract_id=unit_id)
+
+    local_parent_to_children = {}
+    for parent in parent_chunks:
+        parent_id = parent.chunk_id
+        local_parent_to_children[parent_id] = [
+            child.chunk_id for child in child_chunks
+            if child.parent_id == parent_id
+        ]
+
+    return parent_chunks, child_chunks, local_parent_to_children
+
+
 def build_sphr_index(
     corpus: Dict[str, Dict[str, str]],
     embedding_model: str,
@@ -228,27 +246,61 @@ def build_sphr_index(
     retrieval_mode: str,
     bm25_weight: float,
     rrf_k: int,
+    chunk_workers: int = 1,
+    chunk_map_chunksize: int = 16,
 ):
     """Build SPHR index and retriever."""
-    chunker = HierarchicalChunker(child_size=child_chunk_size, child_overlap=child_chunk_overlap)
-    all_parent_chunks = []
-    all_child_chunks = []
-    parent_to_children = {}
 
-    for article_id, article_data in corpus.items():
-        article_text = article_data['text']
-        # IMPORTANT: use canonical corpus unit_id as retrieval identity.
-        # `caption` is display metadata and may not be unique/stable across datasets.
-        unit_id = str(article_id)
-        parent_chunks, child_chunks = chunker.chunk_contract(article_text, contract_id=unit_id)
-        all_parent_chunks.extend(parent_chunks)
-        all_child_chunks.extend(child_chunks)
-        for parent in parent_chunks:
-            parent_id = parent.chunk_id
-            parent_to_children[parent_id] = [
-                child.chunk_id for child in child_chunks
-                if child.parent_id == parent_id
-            ]
+    def chunk_contract_sequential(chunker: HierarchicalChunker):
+        all_parent_chunks_local = []
+        all_child_chunks_local = []
+        parent_to_children_local = {}
+
+        for article_id, article_data in corpus.items():
+            article_text = article_data['text']
+            # IMPORTANT: use canonical corpus unit_id as retrieval identity.
+            # `caption` is display metadata and may not be unique/stable across datasets.
+            unit_id = str(article_id)
+            parent_chunks, child_chunks = chunker.chunk_contract(article_text, contract_id=unit_id)
+            all_parent_chunks_local.extend(parent_chunks)
+            all_child_chunks_local.extend(child_chunks)
+            for parent in parent_chunks:
+                parent_id = parent.chunk_id
+                parent_to_children_local[parent_id] = [
+                    child.chunk_id for child in child_chunks
+                    if child.parent_id == parent_id
+                ]
+
+        return all_parent_chunks_local, all_child_chunks_local, parent_to_children_local
+
+    def chunk_contract_parallel(chunker: HierarchicalChunker):
+        all_parent_chunks_local = []
+        all_child_chunks_local = []
+        parent_to_children_local = {}
+
+        tasks = (
+            (article_id, article_data['text'], child_chunk_size, child_chunk_overlap)
+            for article_id, article_data in corpus.items()
+        )
+
+        print(f"🚀 Parallel chunking enabled: workers={chunk_workers}, map_chunksize={chunk_map_chunksize}")
+        with ProcessPoolExecutor(max_workers=chunk_workers) as executor:
+            for parent_chunks, child_chunks, local_parent_to_children in executor.map(
+                _chunk_one_contract_worker,
+                tasks,
+                chunksize=chunk_map_chunksize,
+            ):
+                all_parent_chunks_local.extend(parent_chunks)
+                all_child_chunks_local.extend(child_chunks)
+                parent_to_children_local.update(local_parent_to_children)
+
+        return all_parent_chunks_local, all_child_chunks_local, parent_to_children_local
+
+    chunker = HierarchicalChunker(child_size=child_chunk_size, child_overlap=child_chunk_overlap)
+    if chunk_workers and chunk_workers > 1:
+        all_parent_chunks, all_child_chunks, parent_to_children = chunk_contract_parallel(chunker)
+    else:
+        all_parent_chunks, all_child_chunks, parent_to_children = chunk_contract_sequential(chunker)
 
     # Enrich parent-child graph with cross-references (SPHR intent)
     parent_to_children = chunker.enrich_parent_to_children_with_cross_refs(
@@ -409,6 +461,10 @@ def main():
     parser.add_argument('--retrieval-mode', type=str, default='dense', choices=['dense', 'hybrid'])
     parser.add_argument('--bm25-weight', type=float, default=0.5)
     parser.add_argument('--rrf-k', type=int, default=60)
+    parser.add_argument('--chunk-workers', type=int, default=1,
+                        help='Number of CPU worker processes for SPHR chunking. Set >1 to enable parallel chunking.')
+    parser.add_argument('--chunk-map-chunksize', type=int, default=16,
+                        help='Task chunksize for ProcessPoolExecutor.map during parallel chunking.')
     parser.add_argument('--rebuild-index', action='store_true', default=False)
     parser.add_argument('--sample-queries', type=int, default=0)
     parser.add_argument('--seed', type=int, default=42)
@@ -458,6 +514,8 @@ def main():
             args.retrieval_mode,
             args.bm25_weight,
             args.rrf_k,
+            args.chunk_workers,
+            args.chunk_map_chunksize,
         )
     else:
         retriever = build_flat_index(
@@ -531,6 +589,8 @@ def main():
             'retrieval_mode': args.retrieval_mode,
             'bm25_weight': args.bm25_weight,
             'rrf_k': args.rrf_k,
+            'chunk_workers': args.chunk_workers,
+            'chunk_map_chunksize': args.chunk_map_chunksize,
             'device': args.device,
             'normalize_embeddings': args.normalize_embeddings,
             'rebuild_index': args.rebuild_index,
