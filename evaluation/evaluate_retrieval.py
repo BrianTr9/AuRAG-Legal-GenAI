@@ -561,30 +561,21 @@ def main():
                 retrieved.append(doc_id)
         return retrieved
 
-    print(f"\n🔍 Retrieving {max_k} documents for {len(queries)} queries...")
-    all_retrieved_results = []
-    
-    for q in queries:
-        question = q['question']
-        relevant = q['relevant_articles']
-
-        docs = retriever.invoke(question)
-        retrieved_full = collect_unique_articles(docs)
-        
-        all_retrieved_results.append({
-            'query': q,
-            'retrieved_full': retrieved_full
-        })
-        
     print(f"\n📈 Calculating metrics for top_k values: {top_k_list}")
     for current_k in top_k_list:
+        print(f"\n🔍 [top_k={current_k}] Retrieving context for {len(queries)} queries...")
+        # Update retriever configuration sequentially instead of truncating from max_k
+        retriever.top_k = current_k
+        
         per_query_results = []
         hit_scores, prec_scores, rec_scores, f1_scores, mrr_scores, ndcg_scores = [], [], [], [], [], []
 
-        for item in all_retrieved_results:
-            q = item['query']
+        for q in queries:
+            question = q['question']
             relevant = q['relevant_articles']
-            retrieved_k = item['retrieved_full'][:current_k]
+
+            docs = retriever.invoke(question)
+            retrieved_k = collect_unique_articles(docs)
 
             metrics = calculate_retrieval_metrics(retrieved_k, relevant)
             hit_scores.append(metrics['hit@k'])
