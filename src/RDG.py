@@ -292,13 +292,26 @@ def collect_validated_citations(
     used_short_ids_in_order: List[str] = []
     seen_used_short = set()
 
+    def _normalize_citation_token(token: str) -> str:
+        """Keep a citation token observable even when it is syntactically invalid.
+
+        We do not want to silently drop malformed citations like ``""`` or
+        dummy IDs copied from the prompt example, because evaluation should
+        count them as hallucinated raw citations instead of treating them as
+        missing citations.
+        """
+        if not isinstance(token, str):
+            return ""
+        stripped = token.strip()
+        return stripped if stripped else "__EMPTY_CITATION__"
+
     if isinstance(reasoning, StructuredReasoning) and reasoning.steps:
         for step in reasoning.steps:
             for short_id in (step.citations or []):
                 if not isinstance(short_id, str):
                     continue
-                short_id = short_id.strip()
-                if not short_id or short_id in seen_used_short:
+                short_id = _normalize_citation_token(short_id)
+                if short_id in seen_used_short:
                     continue
                 seen_used_short.add(short_id)
                 used_short_ids_in_order.append(short_id)
@@ -310,6 +323,10 @@ def collect_validated_citations(
         if cit in short_to_full_refs:
             matched_refs = short_to_full_refs[cit]
         elif citation_mode == "both" and cit in valid_full_ref_set:
+            matched_refs = [cit]
+        else:
+            # Preserve invalid citation tokens so downstream evaluation can
+            # count them as hallucinated citations instead of dropping them.
             matched_refs = [cit]
 
         for ref in matched_refs:
