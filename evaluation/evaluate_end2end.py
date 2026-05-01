@@ -308,7 +308,8 @@ def evaluate_rag_system(
 
         predicted_label = normalize_yn_answer(answer) if json_parse_success == 1 else None
         has_gt_answer = ground_truth is not None and str(ground_truth).strip() != ''
-        gt_label = (str(ground_truth).strip().upper() if has_gt_answer else None)
+        # We also normalize the ground truth to match the binary 'Y'/'N' scheme for fair comparison
+        gt_label = normalize_yn_answer(str(ground_truth)) if has_gt_answer else None
 
         # If no canonical GT answer exists for a dataset, skip answer-accuracy scoring.
         if has_gt_answer:
