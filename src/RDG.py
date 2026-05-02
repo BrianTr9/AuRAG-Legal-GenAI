@@ -416,28 +416,30 @@ class RDGPipeline:
         return max(1, min(int(max_tokens), available))
 
     def _build_prompt(self, question: str, valid_refs: List[str], context_str: str, answer_mode: Literal["freeform", "yn"] = "freeform") -> str:
-        refs_display = "\n".join([f"- {r}" for r in valid_refs])
-        short_refs_display = "\n".join([
-            f"- {r} => {Citation.get_short_id_from_reference(r)}"
-            for r in valid_refs
-        ])
+        refs_display = "\n".join([f"- {r} [{Citation.get_short_id_from_reference(r)}]" for r in valid_refs])
 
         task_hint = ""
-        json_example_answer = "Final answer."
+        json_example_answer = "Direct answer synthesizing reasoning..."
         if answer_mode == "yn":
             task_hint = (
-                "\n*   **Answer Rule:** Your final `answer` MUST be strictly \"Y\" (entailed/true) or \"N\" (not entailed/false)."
+                "\nTASK:\n"
+                "- Output answer as 'Y' if the statement is entailed/true given the context, otherwise 'N'.\n"
+                "- You must choose exactly one of: Y or N.\n"
             )
             json_example_answer = "Y"
 
         return f"""<|start_header_id|>system<|end_header_id|>
 
-You are a strict, logical Legal Analyst. Your task is to answer the user's question based strictly on the provided CONTEXT.
+You are a systematic reasoning assistant. Answer based ONLY on the provided context.
 
 ## INSTRUCTIONS
-*   **Grounding:** Every deduction must be grounded in an `extracted_snippet` (verbatim quote) from the CONTEXT.
-*   **Citation Rule:** You MUST cite the source of your snippet using ONLY the Short IDs from the SHORT_CITATION_MAP. Do not invent citations.
-*   **No Outside Knowledge:** If the context is insufficient, deduce that it is impossible to answer.{task_hint}
+**Use step-by-step reasoning**
+   - extracted_snippet: COPY exact text from context.
+   - deduction: Logical inference based on the snippet.
+   - type: premise/inference/conclusion.
+   - citations: Source ID.
+
+{task_hint}
 
 ## OUTPUT FORMAT
 Return a valid JSON object matching this schema:
@@ -453,22 +455,20 @@ Return a valid JSON object matching this schema:
     "answer": "{json_example_answer}"
 }}
 
-## Use step-by-step reasoning
-   - extracted_snippet: COPY exact text from context.
-   - deduction: Logical inference based on the snippet.
-   - type: premise/inference/conclusion.
-   - citations: Source ID.
+## NOTES
+1.  **Citation:** Every factual claim MUST cite the source using ONLY the Short IDs string (the part inside the brackets [ ]) from the VALID_CITATIONS list.
+2.  **Grounding:** Every deduction must be grounded in a verbatim snippet from the CONTEXT.
+3.  **Reasoning Types:** Use "premise" for direct facts from context, "inference" for logical deductions, and "conclusion" for synthesis steps.
+4.  **Inference:** You can combine multiple reasoning steps to make inferences, but you cannot make unsupported assumptions. If you combine multiple snippets, cite all relevant sources.
+5.  **No Outside Knowledge:** Do NOT use external knowledge. If context is insufficient, state this explicitly.
 
 <|eot_id|><|start_header_id|>user<|end_header_id|>
 
 ## CONTEXT
 {context_str}
 
-## VALID_CITATIONS (Full IDs)
+## VALID_CITATIONS (format: FULL IDs [SHORT IDs])
 {refs_display}
-
-## SHORT_CITATION_MAP (Full ID => Short ID)
-{short_refs_display}
 
 ## QUESTION
 {question}
