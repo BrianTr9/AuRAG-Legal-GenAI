@@ -6,12 +6,18 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-Corpus = Dict[str, Dict[str, str]]
+Corpus = Dict[str, Dict[str, Any]]
 Query = Dict[str, Any]
 
 
 class DatasetAdapter(ABC):
-    """Abstract adapter that maps a dataset into the evaluation schema."""
+    """Abstract adapter that maps a dataset into the evaluation schema.
+
+    The adapter decides the canonical corpus unit for each dataset:
+    it may be an article, a whole contract document, or another retrieval unit,
+    but the returned corpus keys must be stable IDs that downstream evaluators
+    can compare against retrieved citations.
+    """
 
     name: str
 
@@ -26,7 +32,7 @@ class DatasetAdapter(ABC):
         Required fields per query:
         - query_id: str
         - question: str
-        - relevant_articles: list[str]
+        - relevant_articles: list[str]  # canonical corpus-unit IDs
 
         Optional fields:
         - ground_truth_answer: str | None

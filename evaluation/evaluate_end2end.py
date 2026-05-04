@@ -306,18 +306,20 @@ def evaluate_rag_system(
         retrieval_time = result.get('retrieval_time', 0.0)
         generation_time = result.get('generation_time', 0.0)
 
-        predicted_label = normalize_yn_answer(answer) if json_parse_success == 1 else None
-        has_gt_answer = ground_truth is not None and str(ground_truth).strip() != ''
-        # We also normalize the ground truth to match the binary 'Y'/'N' scheme for fair comparison
-        gt_label = normalize_yn_answer(str(ground_truth)) if has_gt_answer else None
+        # Answer accuracy is only calculated for datasets with Y/N answers
+        if args.dataset in ["coliee", "housing_qa"]:
+            predicted_label = normalize_yn_answer(answer) if json_parse_success == 1 else None
+            has_gt_answer = ground_truth is not None and str(ground_truth).strip() != ''
+            gt_label = normalize_yn_answer(str(ground_truth)) if has_gt_answer else None
 
-        # If no canonical GT answer exists for a dataset, skip answer-accuracy scoring.
-        if has_gt_answer:
-            # If the model fails to output a parsable answer, it counts as wrong (0).
-            is_correct = 1 if predicted_label == gt_label else 0
+            if has_gt_answer:
+                is_correct = 1 if predicted_label == gt_label else 0
+            else:
+                is_correct = None
+            is_parsed = 1 if predicted_label is not None else 0
         else:
             is_correct = None
-        is_parsed = 1 if predicted_label is not None else 0
+            is_parsed = json_parse_success
         
         print(f"  Retrieved: {len(retrieved)} articles")
         print(f"  Citations: {len(citations)} articles")

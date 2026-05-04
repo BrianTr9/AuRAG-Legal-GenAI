@@ -7,10 +7,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .base import Corpus, Query
 from .coliee import ColieeAdapter
+from .cuad import CuadAdapter
 from .housing_qa import HousingQAAdapter
 
 _ADAPTERS = {
     "coliee": ColieeAdapter,
+    "cuad": CuadAdapter,
     "housing_qa": HousingQAAdapter,
 }
 

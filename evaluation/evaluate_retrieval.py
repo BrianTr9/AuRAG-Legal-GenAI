@@ -447,6 +447,73 @@ def calculate_retrieval_metrics(retrieved: List[str], relevant: List[str]) -> Di
     }
 
 
+def calculate_snippet_retrieval_metrics(retrieved_docs: List[Document], gt_snippets: List[str]) -> Dict[str, float]:
+    """
+    Evaluates snippet-level retrieval for datasets like CUAD.
+    - A ground truth snippet is 'found' if it appears in any retrieved document's text.
+    - Recall: fraction of gt_snippets found.
+    - Precision: fraction of retrieved_docs that contain at least one gt_snippet.
+    - MRR: Highest rank (idx + 1) among retrieved_docs that contains at least one gt_snippet.
+    """
+    relevant_snippets_total = len(gt_snippets)
+    if relevant_snippets_total == 0:
+        return {
+            'hit@k': 0.0, 'precision@k': 0.0, 'recall@k': 0.0, 'f1@k': 0.0, 'mrr': 0.0, 'ndcg@k': 0.0,
+            'num_retrieved': len(retrieved_docs), 'num_gt': relevant_snippets_total, 'num_overlap': 0
+        }
+        
+    found_snippets = set()
+    relevant_doc_indices = []
+    
+    for i, doc in enumerate(retrieved_docs):
+        doc_is_relevant = False
+        for s_idx, snippet_dict in enumerate(gt_snippets):
+            # snippet_dict contains 'file_path', 'span', 'answer'
+            # The actual snippet text might be in 'span' or 'answer' depending on CUAD
+            # CUAD 'answer' usually contains the extracted text.
+            snippet_text = snippet_dict.get('answer', '')
+            if not snippet_text:
+                continue
+                
+            # If the snippet text was found inside this retrieved document chunk:
+            if snippet_text in doc.page_content:
+                found_snippets.add(s_idx)
+                doc_is_relevant = True
+        
+        if doc_is_relevant:
+            relevant_doc_indices.append(i)
+            
+    recall = len(found_snippets) / relevant_snippets_total
+    precision = len(relevant_doc_indices) / len(retrieved_docs) if retrieved_docs else 0.0
+    
+    f1 = 0.0
+    if precision + recall > 0:
+        f1 = 2 * precision * recall / (precision + recall)
+        
+    hit = 1.0 if len(found_snippets) > 0 else 0.0
+    mrr = 1.0 / (relevant_doc_indices[0] + 1) if relevant_doc_indices else 0.0
+    
+    dcg = 0.0
+    for idx in relevant_doc_indices:
+        dcg += 1.0 / math.log2(idx + 2)
+    
+    ideal_hits = min(relevant_snippets_total, len(retrieved_docs))
+    idcg = sum(1.0 / math.log2(i + 2) for i in range(ideal_hits)) if ideal_hits > 0 else 0.0
+    ndcg = (dcg / idcg) if idcg > 0 else 0.0
+    
+    return {
+        'hit@k': hit,
+        'precision@k': precision,
+        'recall@k': recall,
+        'f1@k': f1,
+        'mrr': mrr,
+        'ndcg@k': ndcg,
+        'num_retrieved': len(retrieved_docs),
+        'num_gt': relevant_snippets_total,
+        'num_overlap': len(found_snippets)
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Retrieval-Only Evaluation (Layer 1)")
     dataset_choices = available_datasets()
@@ -496,6 +563,16 @@ def main():
     )
 
     if args.sample_queries and args.sample_queries > 0:
+        # If running a small subset of documents, filter out queries that target missing documents
+        if args.dataset == 'cuad' and corpus:
+            valid_doc_ids = set(corpus.keys())
+            filtered_queries = [
+                q for q in queries 
+                if any(art in valid_doc_ids for art in q['relevant_articles'])
+            ]
+            if filtered_queries:
+                queries = filtered_queries
+                
         queries = random.sample(queries, min(args.sample_queries, len(queries)))
 
     output_dir = Path(__file__).parent
@@ -575,9 +652,15 @@ def main():
             relevant = q['relevant_articles']
 
             docs = retriever.invoke(question)
-            retrieved_k = collect_unique_articles(docs)
+            
+            if args.dataset == 'cuad':
+                gt_snippets = q.get('metadata', {}).get('ground_truth_snippets', [])
+                metrics = calculate_snippet_retrieval_metrics(docs, gt_snippets)
+                retrieved_k = [doc.metadata.get('contract_id', 'unknown') for doc in docs]
+            else:
+                retrieved_k = collect_unique_articles(docs)
+                metrics = calculate_retrieval_metrics(retrieved_k, relevant)
 
-            metrics = calculate_retrieval_metrics(retrieved_k, relevant)
             hit_scores.append(metrics['hit@k'])
             prec_scores.append(metrics['precision@k'])
             rec_scores.append(metrics['recall@k'])

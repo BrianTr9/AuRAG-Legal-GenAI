@@ -20,6 +20,7 @@ Usage:
         --corpus benchmark/COLIEE/civil.xml \
         --queries benchmark/COLIEE/simple/simple_R06_jp.xml \
         --mode rdg \
+        --citation-mode short \
         --llm-model models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf \
         --n-ctx 16384 \
         --max-tokens auto \
@@ -199,6 +200,7 @@ def evaluate_generation(
     citation_mode: Literal["short", "both"] = "short",
     seed: int = 42,
     sample_size: int = None,
+    dataset: str = "coliee",
 ):
     if sample_size:
         queries = queries[:sample_size]
@@ -220,6 +222,7 @@ def evaluate_generation(
     hallucination_num_used = 0
     precision_num_used = 0
     raw_outputs = []
+    skipped_queries = []  # Track queries with missing corpus documents
 
     for i, query_data in enumerate(queries, 1):
         query_id = query_data['query_id']
@@ -233,6 +236,16 @@ def evaluate_generation(
         retrieved = sorted(set(relevant_articles))
         assert len(retrieved) > 0, f"❌ Layer 2 BROKEN: Query {query_id} has no GT articles! Parser fix may have failed."
         docs = build_documents_from_gt(corpus, retrieved)
+        
+        # Guard: Skip queries with missing corpus documents (e.g., CUAD Unicode mismatch)
+        if len(retrieved) > 0 and len(docs) == 0:
+            print(f"  ⚠️  SKIPPED: Query references {len(retrieved)} GT article(s) but none found in corpus.")
+            skipped_queries.append({
+                'query_id': query_id,
+                'reason': 'missing_corpus_documents',
+                'referenced_articles': retrieved,
+            })
+            continue
 
         t_start = time.time()
         if mode == "rdg":
@@ -265,16 +278,19 @@ def evaluate_generation(
 
         generation_time = time.time() - t_start
 
+        # Answer evaluation: only for datasets with Y/N binary answers (COLIEE, housing_qa)
+        # CUAD doesn't have binary answer labels, so skip answer-accuracy scoring for CUAD.
         predicted_label = normalize_yn_answer(answer) if json_parse_success == 1 else None
-        has_gt_answer = ground_truth is not None and str(ground_truth).strip() != ''
-        # We also normalize the ground truth to match the binary 'Y'/'N' scheme for fair comparison
-        gt_label = normalize_yn_answer(str(ground_truth)) if has_gt_answer else None
+        is_correct = None
+        gt_label = None
         
-        # If no canonical GT answer exists for a dataset, skip answer-accuracy scoring.
-        if has_gt_answer:
-            is_correct = 1 if predicted_label == gt_label else 0
-        else:
-            is_correct = None
+        if dataset in ["coliee", "housing_qa"]:  # Datasets with binary Y/N answers
+            has_gt_answer = ground_truth is not None and str(ground_truth).strip() != ''
+            if has_gt_answer:
+                gt_label = normalize_yn_answer(str(ground_truth))
+                if gt_label is not None:
+                    is_correct = 1 if predicted_label == gt_label else 0
+        # For CUAD, is_correct remains None (not scored)
 
         metrics = calculate_citation_metrics(citations, retrieved, relevant_articles)
         
@@ -336,6 +352,10 @@ def evaluate_generation(
             'mean': mean(hallucination_rates) if hallucination_rates else 0.0,
             'std': stdev(hallucination_rates) if len(hallucination_rates) > 1 else 0.0,
             'denominator_queries': hallucination_num_used,
+        },
+        'skipped_queries': {
+            'count': len(skipped_queries),
+            'queries': skipped_queries,
         },
         'citation_precision': {
             'mean': mean(citation_precisions) if citation_precisions else 0.0,
@@ -423,7 +443,8 @@ def main():
         max_tokens=max_tokens,
         citation_mode=args.citation_mode,
         seed=args.seed,
-        sample_size=None
+        sample_size=None,
+        dataset=args.dataset
     )
 
     output = {

@@ -8,6 +8,10 @@ DATASET_DEFAULTS = {
         "corpus": "benchmark/COLIEE/civil.xml",
         "queries": "benchmark/COLIEE/simple/simple_R06_jp.xml",
     },
+    "cuad": {
+        "corpus": "benchmark/LegalBench-RAG/corpus/cuad",
+        "queries": "benchmark/LegalBench-RAG/benchmarks/cuad.json",
+    },
     "housing_qa": {
         "corpus": "benchmark/housing_qa/data/statutes.tsv",
         "queries": "benchmark/housing_qa/data/questions.json",
