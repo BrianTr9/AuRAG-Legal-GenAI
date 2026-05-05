@@ -96,6 +96,7 @@ def chunk_flat(text: str, contract_id: str, chunk_size: int = 300, overlap: int 
                     'chunk_type': 'flat',
                     'contract_id': contract_id,
                     'chunk_id': f"{contract_id}_flat_{chunk_idx}",
+                    'token_count': len(token_slice)
                 }
             ))
             chunk_idx += 1
@@ -116,6 +117,7 @@ def chunk_flat(text: str, contract_id: str, chunk_size: int = 300, overlap: int 
                 'chunk_type': 'flat',
                 'contract_id': contract_id,
                 'chunk_id': f"{contract_id}_flat_{chunk_idx}",
+                'token_count': len(chunk_words)
             }
         ))
         chunk_idx += 1
@@ -456,14 +458,28 @@ def calculate_snippet_retrieval_metrics(retrieved_docs: List[Document], gt_snipp
     - MRR: Highest rank (idx + 1) among retrieved_docs that contains at least one gt_snippet.
     """
     relevant_snippets_total = len(gt_snippets)
+    
+    context_tokens = 0
+    encoding = tiktoken.get_encoding("cl100k_base") if tiktoken else None
+    for doc in retrieved_docs:
+        if 'token_count' in doc.metadata:
+            context_tokens += doc.metadata['token_count']
+        elif encoding:
+            context_tokens += len(encoding.encode(doc.page_content))
+        else:
+            context_tokens += len(doc.page_content.split())
+            
     if relevant_snippets_total == 0:
         return {
             'hit@k': 0.0, 'precision@k': 0.0, 'recall@k': 0.0, 'f1@k': 0.0, 'mrr': 0.0, 'ndcg@k': 0.0,
-            'num_retrieved': len(retrieved_docs), 'num_gt': relevant_snippets_total, 'num_overlap': 0
+            'num_retrieved': len(retrieved_docs), 'num_gt': relevant_snippets_total, 'num_overlap': 0,
+            'context_tokens': context_tokens,
+            'evidence_density': 0.0
         }
         
     found_snippets = set()
     relevant_doc_indices = []
+    found_snippet_tokens = 0
     
     for i, doc in enumerate(retrieved_docs):
         doc_is_relevant = False
@@ -477,7 +493,12 @@ def calculate_snippet_retrieval_metrics(retrieved_docs: List[Document], gt_snipp
                 
             # If the snippet text was found inside this retrieved document chunk:
             if snippet_text in doc.page_content:
-                found_snippets.add(s_idx)
+                if s_idx not in found_snippets:
+                    found_snippets.add(s_idx)
+                    if encoding:
+                        found_snippet_tokens += len(encoding.encode(snippet_text))
+                    else:
+                        found_snippet_tokens += len(snippet_text.split())
                 doc_is_relevant = True
         
         if doc_is_relevant:
@@ -501,6 +522,8 @@ def calculate_snippet_retrieval_metrics(retrieved_docs: List[Document], gt_snipp
     idcg = sum(1.0 / math.log2(i + 2) for i in range(ideal_hits)) if ideal_hits > 0 else 0.0
     ndcg = (dcg / idcg) if idcg > 0 else 0.0
     
+    evidence_density = found_snippet_tokens / context_tokens if context_tokens > 0 else 0.0
+    
     return {
         'hit@k': hit,
         'precision@k': precision,
@@ -510,7 +533,9 @@ def calculate_snippet_retrieval_metrics(retrieved_docs: List[Document], gt_snipp
         'ndcg@k': ndcg,
         'num_retrieved': len(retrieved_docs),
         'num_gt': relevant_snippets_total,
-        'num_overlap': len(found_snippets)
+        'num_overlap': len(found_snippets),
+        'context_tokens': context_tokens,
+        'evidence_density': evidence_density
     }
 
 
@@ -646,6 +671,8 @@ def main():
         
         per_query_results = []
         hit_scores, prec_scores, rec_scores, f1_scores, mrr_scores, ndcg_scores = [], [], [], [], [], []
+        context_tokens_scores = []
+        evidence_density_scores = []
 
         for q in queries:
             question = q['question']
@@ -660,6 +687,11 @@ def main():
             else:
                 retrieved_k = collect_unique_articles(docs)
                 metrics = calculate_retrieval_metrics(retrieved_k, relevant)
+                c_tokens = sum(doc.metadata.get('token_count', 0) for doc in docs)
+                if c_tokens == 0:
+                    encoding = tiktoken.get_encoding("cl100k_base") if tiktoken else None
+                    c_tokens = sum(len(encoding.encode(d.page_content)) if encoding else len(d.page_content.split()) for d in docs)
+                metrics['context_tokens'] = c_tokens
 
             hit_scores.append(metrics['hit@k'])
             prec_scores.append(metrics['precision@k'])
@@ -667,6 +699,9 @@ def main():
             f1_scores.append(metrics['f1@k'])
             mrr_scores.append(metrics['mrr'])
             ndcg_scores.append(metrics['ndcg@k'])
+            context_tokens_scores.append(metrics['context_tokens'])
+            if 'evidence_density' in metrics:
+                evidence_density_scores.append(metrics['evidence_density'])
             
             per_query_results.append({
                 'query_id': q['query_id'],
@@ -681,7 +716,9 @@ def main():
             'recall@k': {'mean': mean(rec_scores), 'std': stdev(rec_scores) if len(rec_scores) > 1 else 0.0},
             'f1@k': {'mean': mean(f1_scores), 'std': stdev(f1_scores) if len(f1_scores) > 1 else 0.0},
             'mrr': {'mean': mean(mrr_scores), 'std': stdev(mrr_scores) if len(mrr_scores) > 1 else 0.0},
-            'ndcg@k': {'mean': mean(ndcg_scores), 'std': stdev(ndcg_scores) if len(ndcg_scores) > 1 else 0.0}
+            'ndcg@k': {'mean': mean(ndcg_scores), 'std': stdev(ndcg_scores) if len(ndcg_scores) > 1 else 0.0},
+            'context_tokens': {'mean': mean(context_tokens_scores), 'std': stdev(context_tokens_scores) if len(context_tokens_scores) > 1 else 0.0},
+            'evidence_density': {'mean': mean(evidence_density_scores) if evidence_density_scores else 0.0, 'std': stdev(evidence_density_scores) if len(evidence_density_scores) > 1 else 0.0}
         }
 
         output_metadata = {
