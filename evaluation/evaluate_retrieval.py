@@ -654,6 +654,7 @@ def main():
 
     per_query_results = []
     hit_scores, prec_scores, rec_scores, f1_scores, mrr_scores, ndcg_scores = [], [], [], [], [], []
+    include_cuad_context_metrics = args.dataset == 'cuad'
 
     def collect_unique_articles(docs: List[Document]) -> List[str]:
         retrieved = []
@@ -687,11 +688,6 @@ def main():
             else:
                 retrieved_k = collect_unique_articles(docs)
                 metrics = calculate_retrieval_metrics(retrieved_k, relevant)
-                c_tokens = sum(doc.metadata.get('token_count', 0) for doc in docs)
-                if c_tokens == 0:
-                    encoding = tiktoken.get_encoding("cl100k_base") if tiktoken else None
-                    c_tokens = sum(len(encoding.encode(d.page_content)) if encoding else len(d.page_content.split()) for d in docs)
-                metrics['context_tokens'] = c_tokens
 
             hit_scores.append(metrics['hit@k'])
             prec_scores.append(metrics['precision@k'])
@@ -699,8 +695,8 @@ def main():
             f1_scores.append(metrics['f1@k'])
             mrr_scores.append(metrics['mrr'])
             ndcg_scores.append(metrics['ndcg@k'])
-            context_tokens_scores.append(metrics['context_tokens'])
-            if 'evidence_density' in metrics:
+            if include_cuad_context_metrics:
+                context_tokens_scores.append(metrics['context_tokens'])
                 evidence_density_scores.append(metrics['evidence_density'])
             
             per_query_results.append({
@@ -717,9 +713,17 @@ def main():
             'f1@k': {'mean': mean(f1_scores), 'std': stdev(f1_scores) if len(f1_scores) > 1 else 0.0},
             'mrr': {'mean': mean(mrr_scores), 'std': stdev(mrr_scores) if len(mrr_scores) > 1 else 0.0},
             'ndcg@k': {'mean': mean(ndcg_scores), 'std': stdev(ndcg_scores) if len(ndcg_scores) > 1 else 0.0},
-            'context_tokens': {'mean': mean(context_tokens_scores), 'std': stdev(context_tokens_scores) if len(context_tokens_scores) > 1 else 0.0},
-            'evidence_density': {'mean': mean(evidence_density_scores) if evidence_density_scores else 0.0, 'std': stdev(evidence_density_scores) if len(evidence_density_scores) > 1 else 0.0}
         }
+
+        if include_cuad_context_metrics:
+            aggregate['context_tokens'] = {
+                'mean': mean(context_tokens_scores),
+                'std': stdev(context_tokens_scores) if len(context_tokens_scores) > 1 else 0.0,
+            }
+            aggregate['evidence_density'] = {
+                'mean': mean(evidence_density_scores) if evidence_density_scores else 0.0,
+                'std': stdev(evidence_density_scores) if len(evidence_density_scores) > 1 else 0.0,
+            }
 
         output_metadata = {
             'dataset': args.dataset,
