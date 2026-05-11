@@ -40,3 +40,4 @@ notebooks/
 # Environment
 .env
 *.log
+.gitignore
