@@ -278,9 +278,11 @@ def collect_validated_citations(
         output_dict: Parsed JSON output produced by the model.
         valid_refs: Full references built from retrieved context.
         citation_mode:
-            - "short": accept only short IDs (e.g., doc_0_sec_I).
-            - "both": accept both short IDs and full references
-              (e.g., doc_0_Section_I_TITLE).
+                        - "short": accept only short IDs (e.g., doc_0_sec_I); full refs
+                            and malformed mixed tokens are preserved as invalid citations.
+                        - "both": accept exact short IDs and exact full references
+                            (e.g., doc_0_Section_I_TITLE); malformed mixed tokens are still
+                            preserved as invalid citations.
     """
     if citation_mode not in ("short", "both"):
         raise ValueError(f"Unsupported citation_mode: {citation_mode}")
@@ -289,8 +291,12 @@ def collect_validated_citations(
     short_to_full_refs = _build_short_to_full_ref_map(valid_refs)
     valid_full_ref_set = set(valid_refs)
 
-    used_short_ids_in_order: List[str] = []
-    seen_used_short = set()
+    used_citation_tokens_in_order: List[str] = []
+    seen_used_tokens = set()
+
+    def _make_invalid_citation(token: str) -> Citation:
+        invalid_contract_id = f"__INVALID__::{token.encode('utf-8').hex()}"
+        return Citation(token, "Unknown", "Unknown", invalid_contract_id)
 
     def _normalize_citation_token(token: str) -> str:
         """Keep a citation token observable even when it is syntactically invalid.
@@ -311,31 +317,32 @@ def collect_validated_citations(
                 if not isinstance(short_id, str):
                     continue
                 short_id = _normalize_citation_token(short_id)
-                if short_id in seen_used_short:
+                if short_id in seen_used_tokens:
                     continue
-                seen_used_short.add(short_id)
-                used_short_ids_in_order.append(short_id)
+                seen_used_tokens.add(short_id)
+                used_citation_tokens_in_order.append(short_id)
 
-    full_refs_in_order: List[str] = []
-    seen_full = set()
-    for cit in used_short_ids_in_order:
-        matched_refs: List[str] = []
+    validated_citations: List[Citation] = []
+    seen_reference_ids = set()
+    for cit in used_citation_tokens_in_order:
+        matched_citations: List[Citation]
         if cit in short_to_full_refs:
-            matched_refs = short_to_full_refs[cit]
+            matched_citations = [Citation.from_reference_string(ref) for ref in short_to_full_refs[cit]]
         elif citation_mode == "both" and cit in valid_full_ref_set:
-            matched_refs = [cit]
+            matched_citations = [Citation.from_reference_string(cit)]
         else:
             # Preserve invalid citation tokens so downstream evaluation can
-            # count them as hallucinated citations instead of dropping them.
-            matched_refs = [cit]
+            # count them as hallucinated citations instead of collapsing them
+            # into a valid article ID.
+            matched_citations = [_make_invalid_citation(cit)]
 
-        for ref in matched_refs:
-            if ref in seen_full:
+        for citation in matched_citations:
+            if citation.reference_id in seen_reference_ids:
                 continue
-            seen_full.add(ref)
-            full_refs_in_order.append(ref)
+            seen_reference_ids.add(citation.reference_id)
+            validated_citations.append(citation)
 
-    return [Citation.from_reference_string(ref) for ref in full_refs_in_order]
+    return validated_citations
 
 # ==========================================
 # MAIN PIPELINE
