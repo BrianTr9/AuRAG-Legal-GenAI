@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Callable, Dict, List
 
 from .AuRAGSystem import AuRAGSystem
+
 from .base import RAGSystem
 
 
@@ -12,8 +13,14 @@ def _build_aurag() -> RAGSystem:
     return AuRAGSystem(system_name="aurag")
 
 
+def _build_flat_prompt() -> RAGSystem:
+    from .FlatPromptSystem import FlatPromptSystem
+    return FlatPromptSystem(system_name="flat_prompt")
+
+
 _SYSTEM_BUILDERS: Dict[str, Callable[[], RAGSystem]] = {
     "aurag": _build_aurag,
+    "flat_prompt": _build_flat_prompt,
 }
 
 

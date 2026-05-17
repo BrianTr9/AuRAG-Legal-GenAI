@@ -108,6 +108,7 @@ class AuRAGSystem(RAGSystem):
         print(f"  - Generation max tokens: {'auto' if max_tokens is None else max_tokens}")
         print(f"  - GPU layers: {n_gpu_layers}")
         print(f"  - Seed: {seed}")
+        print(f"  - Embedding device: {kwargs.get('device', 'cpu')}")
         print(f"  - Rebuild index: {rebuild_index}")
         
         # Step 1: Hierarchical chunking (SPHR Layer 1)
@@ -165,10 +166,12 @@ class AuRAGSystem(RAGSystem):
             for child in all_child_chunks
         ]
         
+        device = kwargs.get('device', 'cpu')
+        normalize_embeddings = kwargs.get('normalize_embeddings', True)
         embedding = HuggingFaceEmbeddings(
             model_name=embedding_model,
-            model_kwargs={'device': 'mps'},
-            encode_kwargs={'normalize_embeddings': True}
+            model_kwargs={'device': device},
+            encode_kwargs={'normalize_embeddings': normalize_embeddings}
         )
 
         # IMPORTANT: Avoid duplicating vectors across repeated runs.

@@ -51,9 +51,9 @@ EVAL_PATH = Path(__file__).parent
 ROOT_PATH = EVAL_PATH.parent
 sys.path.insert(0, str(ROOT_PATH))
 
-from systems.base import RAGSystem
-from systems.AuRAGSystem import DEFAULT_N_CTX
-from systems.registry import available_systems, create_system
+from evaluation.systems.base import RAGSystem
+from evaluation.systems.AuRAGSystem import DEFAULT_N_CTX
+from evaluation.systems.registry import available_systems, create_system
 from evaluation.adapters import available_datasets, load_dataset
 from evaluation.dataset_defaults import resolve_dataset_paths
 
@@ -247,6 +247,7 @@ def evaluate_rag_system(
     system: RAGSystem,
     queries: List[Dict[str, Any]],
     system_name: str,
+    dataset: str = "coliee",
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """
     Evaluate a RAG system on citation constraints and answer quality.
@@ -255,6 +256,7 @@ def evaluate_rag_system(
         system: RAG system instance (implements RAGSystem interface)
         queries: List of query dictionaries
         system_name: Name for logging
+        dataset: Dataset name used to gate answer-accuracy scoring (Y/N only for coliee/housing_qa)
     Returns:
         (aggregate_metrics, per_query_results)
     """
@@ -307,7 +309,9 @@ def evaluate_rag_system(
         generation_time = result.get('generation_time', 0.0)
 
         # Answer accuracy is only calculated for datasets with Y/N answers
-        if args.dataset in ["coliee", "housing_qa"]:
+        predicted_label = None
+        gt_label = None
+        if dataset in ["coliee", "housing_qa"]:
             predicted_label = normalize_yn_answer(answer) if json_parse_success == 1 else None
             has_gt_answer = ground_truth is not None and str(ground_truth).strip() != ''
             gt_label = normalize_yn_answer(str(ground_truth)) if has_gt_answer else None
@@ -553,6 +557,8 @@ def main():
                        help='RAG system to evaluate')
     parser.add_argument('--embedding', type=str, default='multilingual',
                        help='Embedding model identifier')
+    parser.add_argument('--device', type=str, default='cpu',
+                       help='Device for embedding model (cpu | cuda | mps). Use cuda on HPC GPU nodes.')
     parser.add_argument('--llm-model', type=str,
                        default='models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf',
                        help='Path to LLM model (GGUF format) - Llama-3.1-8B for legal context')
@@ -570,6 +576,12 @@ def main():
                        help='BM25 weight in weighted-RRF when retrieval-mode=hybrid')
     parser.add_argument('--rrf-k', type=int, default=60,
                        help='RRF constant (larger = flatter rank decay)')
+    parser.add_argument('--child-chunk-size', type=int, default=300,
+                       help='Chunk token size for flat/hierarchical chunking (default 300; try 512 for flat_prompt baseline)')
+    parser.add_argument('--child-chunk-overlap', type=int, default=90,
+                       help='Chunk token overlap (default 90)')
+    parser.add_argument('--citation-mode', type=str, default='short', choices=['short', 'both'],
+                       help='Citation reference format for prompt-only baseline (short=article IDs, both=full+short)')
     parser.add_argument('--sample-queries', type=int, default=None,
                        help='Limit to first N queries (for testing)')
     parser.add_argument('--rebuild-index', action='store_true',
@@ -649,8 +661,10 @@ def main():
     print(f"Embedding: {embedding_model}")
     print(f"LLM: {args.llm_model}")
     print(f"Top-K: {args.top_k}")
+    print(f"Chunk size / overlap: {args.child_chunk_size} / {args.child_chunk_overlap}")
     print(f"Model Context (n_ctx): {args.n_ctx}")
     print(f"Generation Max Tokens: {'auto' if parsed_max_tokens is None else parsed_max_tokens}")
+    print(f"Citation mode: {args.citation_mode}")
     print(f"Retrieval Mode: {args.retrieval_mode}")
     if args.retrieval_mode == 'hybrid':
         print(f"BM25 Weight: {args.bm25_weight}")
@@ -670,8 +684,8 @@ def main():
         db_path=db_path,
         top_k=args.top_k,
         rebuild_index=args.rebuild_index,
-        child_chunk_size=300,
-        child_chunk_overlap=90,
+        child_chunk_size=args.child_chunk_size,
+        child_chunk_overlap=args.child_chunk_overlap,
         context_budget=12000,
         retrieval_mode=args.retrieval_mode,
         bm25_weight=args.bm25_weight,
@@ -679,7 +693,9 @@ def main():
         seed=args.seed,
         n_ctx=args.n_ctx,
         max_tokens=parsed_max_tokens,
-        n_gpu_layers=-1
+        n_gpu_layers=-1,
+        citation_mode=args.citation_mode,
+        device=args.device,
     )
     
     # Run evaluation
@@ -687,6 +703,7 @@ def main():
         system=system,
         queries=queries,
         system_name=args.system,
+        dataset=args.dataset,
     )
     
     # Save results
