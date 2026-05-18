@@ -169,6 +169,12 @@ def calculate_citation_metrics(
     # This is a HARD CONSTRAINT violation - system cited articles it never retrieved
     hallucinated_citations = cited_set - retrieved_set  # Set difference: cited \ retrieved
     hallucination_rate = len(hallucinated_citations) / len(cited_set) if len(cited_set) > 0 else 0.0
+
+    # STRICT GT comparator: citations not present in the gold set at all.
+    # This is the apples-to-apples metric when comparing against Layer 2 perfect-context runs,
+    # because in e2e retrieval the retrieved context is noisy and differs from GT.
+    gt_hallucinated_citations = cited_set - relevant_set
+    gt_hallucination_rate = len(gt_hallucinated_citations) / len(cited_set) if len(cited_set) > 0 else 0.0
     
     # NEW METRIC: Misattribution Rate (TYPE 2: SEMANTIC HALLUCINATION)
     # Definition: Citations that are VALIDLY retrieved (syntactically correct) but NOT IN GT.
@@ -206,6 +212,7 @@ def calculate_citation_metrics(
     return {
         'citation_hallucination_rate': hallucination_rate,  # Core thesis metric (Fabrication/Type 1)
         'fabrication_rate': hallucination_rate,             # Explicit alias for Type 1
+        'citation_hallucination_rate_gt': gt_hallucination_rate,  # Strict GT comparator for Layer 2
         'misattribution_rate': misattribution_rate,         # Type 2 overall (normalized by |C|)
         'misattribution_rate_conditional': misattribution_rate_conditional,  # Type 2 conditioned on |C ∩ R|
         'non_gt_citation_rate': misattribution_rate,        # Alias
@@ -270,6 +277,7 @@ def evaluate_rag_system(
     
     # Metrics to aggregate
     hallucination_rates = []
+    hallucination_rates_gt = []
     misattribution_rates = []
     misattribution_rates_conditional = []
     citation_precisions = []
@@ -332,7 +340,8 @@ def evaluate_rag_system(
         metrics = calculate_citation_metrics(citations, retrieved, relevant_articles)
         retrieval_metrics = calculate_retrieval_metrics(retrieved, relevant_articles)
         
-        print(f"  Hallucination (Type 1): {metrics['citation_hallucination_rate']*100:.1f}%")
+        print(f"  Hallucination (vs retrieved, Type 1): {metrics['citation_hallucination_rate']*100:.1f}%")
+        print(f"  Hallucination (vs GT): {metrics['citation_hallucination_rate_gt']*100:.1f}%")
         print(f"  Misattribution (Type 2): {metrics['misattribution_rate']*100:.1f}%")
         print(f"  Misattribution|Valid (Type 2): {metrics['misattribution_rate_conditional']*100:.1f}%")
         print(f"  Citation Precision: {metrics['citation_precision']*100:.1f}%")
@@ -353,6 +362,7 @@ def evaluate_rag_system(
         # - Precision/Recall are query-level and averaged across all queries.
         if json_parse_success == 1:
             hallucination_rates.append(metrics['citation_hallucination_rate'])
+            hallucination_rates_gt.append(metrics['citation_hallucination_rate_gt'])
             hallucination_num_used += 1
             misattribution_rates.append(metrics['misattribution_rate'])
 
@@ -386,14 +396,7 @@ def evaluate_rag_system(
             'predicted_answer': predicted_label,
             'answer_correct': is_correct,
             'json_parse_success': json_parse_success,
-            # For easy inspection: make GT vs LLM citations explicit.
-            # - GT citations: COLIEE-labeled relevant article numbers (<article> tags)
-            # - LLM citations: auto-collected citations from RDG reasoning steps
             'gt_citations': relevant_articles,
-            'llm_citations': citations,
-
-            # Backward compatible keys (older output schema)
-            'relevant_articles': relevant_articles,
             'retrieved_articles': retrieved,
             'cited_articles': citations,
             'metrics': metrics,
@@ -412,6 +415,13 @@ def evaluate_rag_system(
             'std': stdev(hallucination_rates) if len(hallucination_rates) > 1 else 0.0,
             'min': min(hallucination_rates) if hallucination_rates else 0.0,
             'max': max(hallucination_rates) if hallucination_rates else 0.0,
+            'denominator_queries': hallucination_num_used,
+        },
+        'citation_hallucination_rate_gt': {  # Strict GT comparator for Layer 2
+            'mean': mean(hallucination_rates_gt) if hallucination_rates_gt else 0.0,
+            'std': stdev(hallucination_rates_gt) if len(hallucination_rates_gt) > 1 else 0.0,
+            'min': min(hallucination_rates_gt) if hallucination_rates_gt else 0.0,
+            'max': max(hallucination_rates_gt) if hallucination_rates_gt else 0.0,
             'denominator_queries': hallucination_num_used,
         },
         'misattribution_rate': {  # Type 2: Semantic Hallucination
@@ -491,7 +501,8 @@ def evaluate_rag_system(
     print(f"📊 AGGREGATE RESULTS")
     print(f"{'='*70}")
     print(f"Answer Accuracy: {aggregate_metrics['answer_accuracy']['mean']*100:.2f}% (scored {aggregate_metrics['answer_accuracy']['num_scored']}/{aggregate_metrics['answer_accuracy']['num_total']})")
-    print(f"Citation Hallucination Rate (Type 1): {aggregate_metrics['citation_hallucination_rate']['mean']*100:.2f}%")
+    print(f"Citation Hallucination Rate (vs retrieved, Type 1): {aggregate_metrics['citation_hallucination_rate']['mean']*100:.2f}%")
+    print(f"Citation Hallucination Rate (vs GT): {aggregate_metrics['citation_hallucination_rate_gt']['mean']*100:.2f}%")
     print(f"Misattribution Rate (Type 2): {aggregate_metrics['misattribution_rate']['mean']*100:.2f}%")
     print(f"Misattr.|Valid (Type 2): {aggregate_metrics['misattribution_rate_conditional']['mean']*100:.2f}%")
     print(f"Citation Precision: {aggregate_metrics['citation_precision']['mean']*100:.2f}%")
