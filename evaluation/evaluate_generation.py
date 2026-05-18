@@ -39,9 +39,21 @@ import argparse
 import json
 import random
 import time
+import os
 from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 from typing import Dict, List, Any, Tuple, Optional, Literal
 from statistics import mean, stdev
+
+try:
+    import openai
+except ImportError:
+    openai = None
 
 from langchain_core.documents import Document
 
@@ -68,6 +80,8 @@ from RDG import (
     StructuredReasoning,
     _parse_json_output,
     collect_validated_citations,
+    ReferenceExtractor,
+    RDGPipeline,
 )
 
 
@@ -112,6 +126,75 @@ def extract_article_ids_from_citations(citations: List[Citation]) -> List[str]:
         elif c.reference_id:
              ids.append(extract_contract_id(c.reference_id))
     return sorted(set(ids))
+
+
+def gpt4o_generate(
+    rdg,
+    question: str,
+    documents: List[Document],
+    model_name: str = "gpt-4o",
+    temperature: float = 0.0,
+    citation_mode: Literal["short", "both"] = "short",
+):
+    if not openai:
+        raise ImportError("The 'openai' package is required for GPT-4o evaluation. Please run `pip install openai`.")
+        
+    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+    
+    # FAIRNESS: Use the exact same context extractor as RDG
+    valid_refs_full = rdg.extractor.extract_references(documents)
+
+    context_parts = []
+    for doc in documents:
+        # Reconstruct Full Ref
+        c_id = doc.metadata.get('contract_id') or doc.metadata.get('parent_id', 'unknown')
+        s_num = doc.metadata.get('section_num', 'N/A')
+        s_title = (doc.metadata.get('section_title') or 'Unknown').replace(' ', '_').strip()
+        full_ref = f"{c_id}_Section_{s_num}_{s_title}"
+        context_parts.append(f"[{full_ref}]\n{doc.page_content.strip()}")
+
+    context_str = "\n\n---\n\n".join(context_parts)
+
+    # FAIRNESS: Use the exact same prompt generation logic as RDG
+    prompt_str = rdg._build_prompt(question, valid_refs_full, context_str, answer_mode="yn")
+    
+    # Parse Llama-3 format into OpenAI messages format
+    system_part = prompt_str.split("<|start_header_id|>system<|end_header_id|>")[1].split("<|eot_id|>")[0].strip()
+    user_part = prompt_str.split("<|start_header_id|>user<|end_header_id|>")[1].split("<|eot_id|>")[0].strip()
+
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {"role": "system", "content": system_part},
+            {"role": "user", "content": user_part}
+        ],
+        temperature=temperature,
+        response_format={ "type": "json_object" },
+    )
+    
+    raw_text = response.choices[0].message.content.strip()
+    output_dict = _parse_json_output(raw_text)
+    
+    if not output_dict:
+        return {
+            'answer': raw_text,
+            'reasoning': StructuredReasoning([]),
+            'citations': [],
+            'json_parse_success': 0,
+            'raw_output_text': raw_text,
+            'effective_max_tokens': None,
+        }
+    reasoning = StructuredReasoning.from_dict(output_dict.get('reasoning', {}))
+    validated_citations = collect_validated_citations(output_dict, valid_refs_full, citation_mode=citation_mode)
+
+    return {
+        'answer': str(output_dict.get('answer', '')),
+        'reasoning': reasoning,
+        'citations': validated_citations,
+        'json_parse_success': 1,
+        'raw_output_text': raw_text,
+        'effective_max_tokens': None,
+    }
 
 
 def prompt_only_generate(
@@ -211,6 +294,8 @@ def evaluate_generation(
     # Validate Layer 2 setup: retrieved should equal relevant_articles (GT context)
     print(f"✓ Layer 2: Perfect retrieval (GT context isolation)")
 
+    # Always initialize RDG context even for OpenAI to ensure 100% uniformity 
+    # of the prompting logic and reference extraction phase.
     rdg = get_rdg_pipeline(model_path=llm_model_path, n_ctx=n_ctx, n_gpu_layers=n_gpu_layers, seed=seed)
 
     per_query_results = []
@@ -261,12 +346,26 @@ def evaluate_generation(
             effective_max_tokens = None
             if structured.metadata and 'effective_max_tokens' in structured.metadata:
                 effective_max_tokens = int(structured.metadata['effective_max_tokens'])
-        else:
+        elif mode == "prompt":
             baseline = prompt_only_generate(
                 rdg,
                 question,
                 docs,
                 max_tokens=max_tokens,
+                temperature=0.0,
+                citation_mode=citation_mode,
+            )
+            answer = baseline['answer']
+            citations = extract_article_ids_from_citations(baseline['citations'])
+            json_parse_success = int(baseline.get('json_parse_success', 0))
+            raw_output_text = str(baseline.get('raw_output_text', answer))
+            effective_max_tokens = baseline.get('effective_max_tokens')
+        elif mode == "gpt4o":
+            baseline = gpt4o_generate(
+                rdg,
+                question,
+                docs,
+                model_name="gpt-4o",
                 temperature=0.0,
                 citation_mode=citation_mode,
             )
@@ -396,7 +495,7 @@ def main():
                         help='Dataset adapter to use for corpus/query loading')
     parser.add_argument('--corpus', type=str, default=None, help='Optional corpus path override')
     parser.add_argument('--queries', type=str, default=None, help='Optional queries path override')
-    parser.add_argument('--mode', type=str, default='rdg', choices=['rdg', 'prompt'])
+    parser.add_argument('--mode', type=str, default='rdg', choices=['rdg', 'prompt', 'gpt4o'])
     parser.add_argument('--llm-model', type=str, default='models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf')
     parser.add_argument('--n-ctx', type=int, default=DEFAULT_N_CTX)
     parser.add_argument('--n-gpu-layers', type=int, default=-1)
